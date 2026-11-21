@@ -187,8 +187,8 @@ struct _FILECONTENT {
     DWORD  nFileSizeLow;                    // File size [LOW  DWORD]
     DWORD  nFileSizeHigh;                   // File size [HIGH DWORD]
     DWORD  nFileAttributes;                 // File attributes (e.g. directory)
-    LPTSTR  nChkSum;                         // File checksum (planned for the future, currently not used)
-    BOOL nChkSumUnknown;             // Cannot read file
+    QWORD nChkSum;                          // XXH3-64 of file contents
+    BOOL nChkSumUnknown;                    // Hash was unavailable
     struct _FILECONTENT FAR* lpFirstSubFC;  // Pointer to file's first sub file
     struct _FILECONTENT FAR* lpBrotherFC;   // Pointer to file's brother
     struct _FILECONTENT FAR* lpFatherFC;    // Pointer to file's father
@@ -400,7 +400,7 @@ struct _SAVEFILECONTENT {
     DWORD nFileSizeLow;        // File size [LOW  DWORD]
     DWORD nFileSizeHigh;       // File size [HIGH DWORD]
     DWORD nFileAttributes;     // File attributes
-    DWORD nChkSum;             // File checksum (planned for the future, currently not used)
+    DWORD nChkSum;             // Legacy unused checksum field
     DWORD ofsFirstSubFile;     // Position of file's first sub file
     DWORD ofsBrotherFile;      // Position of file's brother file
     DWORD ofsFatherFile;       // Position of file's father file
@@ -409,6 +409,9 @@ struct _SAVEFILECONTENT {
     // new since file content version 2
     DWORD nFileNameLen;  // (v2) Length of file's name in chars incl. NULL char (up to 1.8.2 there a was single byte for internal fFileMatch field that was always zero)
 
+    DWORD nHashLow;       // (v3) XXH3-64 low 32 bits
+    DWORD nHashHigh;      // (v3) XXH3-64 high 32 bits
+    DWORD fHashValid;     // (v3) 1 if the hash was successfully calculated
     // ^^^ here the file content structure can be extended
     // * increase the version number for the new file content format
     // * place a comment with a reference to the new version before the new fields
@@ -420,7 +423,8 @@ typedef struct _SAVEFILECONTENT SAVEFILECONTENT, FAR* LPSAVEFILECONTENT;
 #define FILECONTENT_VERSION_EMPTY 0
 #define FILECONTENT_VERSION_1 1
 #define FILECONTENT_VERSION_2 2
-#define FILECONTENT_VERSION_CURRENT KEYCONTENT_VERSION_2
+#define FILECONTENT_VERSION_3 3
+#define FILECONTENT_VERSION_CURRENT FILECONTENT_VERSION_3
 
 
 // Adjusted for filecontent saving. 1.8

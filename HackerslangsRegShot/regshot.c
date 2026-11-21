@@ -156,7 +156,8 @@ LPTSTR GetWholeKeyName(LPKEYCONTENT lpStartKC, BOOL fUseLongNames)
                 cchName = lpKC->cchKeyName;
                 lpszKeyName = lpKC->lpszKeyName;
             }
-            _tcsncpy_s(lpszTail -= cchName, cchName + 1, lpszKeyName, cchName);
+            lpszTail -= cchName;
+            memcpy(lpszTail, lpszKeyName, cchName * sizeof(TCHAR));
             if (lpszTail > lpszName) {
                 *--lpszTail = (TCHAR)'\\';
             }
@@ -205,7 +206,8 @@ LPTSTR GetWholeValueName(LPVALUECONTENT lpVC, BOOL fUseLongNames)
     lpszTail = &lpszName[cchName - 1];
     lpszTail[0] = (TCHAR)'\0';
     if (NULL != lpVC->lpszValueName) {
-        _tcsncpy_s(lpszTail -= cchValueName, cchValueName + 1, lpVC->lpszValueName, cchValueName);
+        lpszTail -= cchValueName;
+        memcpy(lpszTail, lpVC->lpszValueName, cchValueName * sizeof(TCHAR));
     }
     if (lpszTail > lpszName) {
         *--lpszTail = (TCHAR)'\\';
@@ -225,7 +227,8 @@ LPTSTR GetWholeValueName(LPVALUECONTENT lpVC, BOOL fUseLongNames)
                 cchName = lpKC->cchKeyName;
                 lpszKeyName = lpKC->lpszKeyName;
             }
-            _tcsncpy_s(lpszTail -= cchName, cchName + 1, lpszKeyName, cchName);
+            lpszTail -= cchName;
+            memcpy(lpszTail, lpszKeyName, cchName * sizeof(TCHAR));
             if (lpszTail > lpszName) {
                 *--lpszTail = (TCHAR)'\\';
             }
@@ -248,7 +251,7 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
     DWORD nDwordCpu;
 #if 1 == __LITTLE_ENDIAN__
     // no REG_QWORD_BIG_ENDIAN yet
-#elif
+#else
     QWORD nQwordCpu;
 #endif
 
@@ -343,7 +346,7 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
 
 #if 1 == __LITTLE_ENDIAN__
         case REG_DWORD_BIG_ENDIAN:
-#elif
+#else
         case REG_DWORD_LITTLE_ENDIAN:
 #endif
             // convert DWORD with different endianness
@@ -354,7 +357,7 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
 
 #if 1 == __LITTLE_ENDIAN__
         case REG_DWORD_LITTLE_ENDIAN:
-#elif
+#else
         case REG_DWORD_BIG_ENDIAN:
 #endif
             // native DWORD that can be displayed as DWORD
@@ -371,12 +374,12 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
 
 #if 1 == __LITTLE_ENDIAN__
             //case REG_QWORD_BIG_ENDIAN:
-#elif
+#else
         case REG_QWORD_LITTLE_ENDIAN:
 #endif
 #if 1 == __LITTLE_ENDIAN__
             // no REG_QWORD_BIG_ENDIAN yet
-#elif
+#else
             // convert QWORD with different endianness
             lpQword = &nQwordCpu;
             for (ibCurrent = 0; ibCurrent < sizeof(QWORD); i++) {
@@ -386,7 +389,7 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
 
 #if 1 == __LITTLE_ENDIAN__
         case REG_QWORD_LITTLE_ENDIAN:
-#elif
+#else
             //case REG_QWORD_BIG_ENDIAN:
 #endif
                 // native QWORD that can be displayed as QWORD
@@ -777,7 +780,7 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
             // skip KC2 if names do *not* match (ATTENTION: test for match, THEN negate)
             if (!(
                 (lpKC1->lpszKeyName == lpKC2->lpszKeyName)
-                || ((NULL != lpKC1->lpszKeyName) && (NULL != lpKC2->lpszKeyName) && (0 == _tcscmp(lpKC1->lpszKeyName, lpKC2->lpszKeyName)))  // TODO: case-insensitive compare?
+                || ((NULL != lpKC1->lpszKeyName) && (NULL != lpKC2->lpszKeyName) && (0 == _tcsicmp(lpKC1->lpszKeyName, lpKC2->lpszKeyName)))
                 )) {
                 continue;
             }
@@ -806,7 +809,7 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
                         // skip VC2 if names do *not* match (ATTENTION: test for match, THEN negate)
                         if (!(
                             (lpVC1->lpszValueName == lpVC2->lpszValueName)
-                            || ((NULL != lpVC1->lpszValueName) && (NULL != lpVC2->lpszValueName) && (0 == _tcscmp(lpVC1->lpszValueName, lpVC2->lpszValueName)))  // TODO: case-insensitive compare?
+                            || ((NULL != lpVC1->lpszValueName) && (NULL != lpVC2->lpszValueName) && (0 == _tcsicmp(lpVC1->lpszValueName, lpVC2->lpszValueName)))
                             )) {
                             continue;
                         }
@@ -1563,7 +1566,7 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
 #endif
 
                 // Enumerate sub key
-                cchSubKeyName = (DWORD)nStringBufferSize;
+                cchSubKeyName = (DWORD)(nStringBufferSize / sizeof(TCHAR));
                 nErrNo = RegEnumKeyEx(hRegKey, i,
                     lpStringBuffer,
                     &cchSubKeyName,  // in TCHARs; in *including* and out *excluding* NULL char
