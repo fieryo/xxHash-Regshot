@@ -108,6 +108,9 @@ VOID SetTextsToDefaultLanguage(VOID)
     asLangTexts[iszTextTextScan].lpszText = TEXT("&Scan dir1[;dir2;dir3;...;dir nn]:");
     asLangTexts[iszTextTextScan].nIDDlgItem = IDC_CHECKDIR;
 
+    asLangTexts[iszTextCheckUsn].lpszText = TEXT("&USN incremental");
+    asLangTexts[iszTextCheckUsn].nIDDlgItem = IDC_CHECKUSN;
+
     asLangTexts[iszTextMenuShot].lpszText = TEXT("&Shot");
     asLangTexts[iszTextMenuShotSave].lpszText = TEXT("Shot and Sa&ve...");
     asLangTexts[iszTextMenuLoad].lpszText = TEXT("Loa&d...");

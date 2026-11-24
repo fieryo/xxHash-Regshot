@@ -21,5 +21,13 @@ if errorlevel 1 exit /b 1
 usn_test.exe
 set result=%errorlevel%
 del /q usn_test.exe usn_test.obj
+if not "%result%"=="0" exit /b %result%
+cl /nologo /W4 /DUNICODE /D_UNICODE /Fe:usnbaseline_test.exe usnbaseline_test.c ^
+  ..\HackerslangsRegShot\usnbaseline.c ^
+  ..\HackerslangsRegShot\third_party\xxhash\xxhash.c
+if errorlevel 1 exit /b 1
+usnbaseline_test.exe
+set result=%errorlevel%
+del /q usnbaseline_test.exe usnbaseline_test.obj usnbaseline.obj xxhash.obj
 popd
 exit /b %result%

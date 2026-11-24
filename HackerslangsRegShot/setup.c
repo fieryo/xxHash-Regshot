@@ -39,6 +39,7 @@ LPTSTR lpszIniUseLongRegHead = TEXT("UseLongRegHead");
 LPTSTR lpszIniOutSeparateObjs = TEXT("OutSeparateObjs");
 LPTSTR lpszIniOutMaxBinaryBytes = TEXT("OutMaxBinaryBytes");
 LPTSTR lpszIniDontDisplayInfoAfterShot = TEXT("DontDisplayInfoAfterShot");
+LPTSTR lpszIniUsnIncremental = TEXT("UsnIncremental");
 
 LPTSTR lpgrszRegSkipStrings;
 LPTSTR lpgrszFileSkipStrings;
@@ -163,6 +164,9 @@ BOOL LoadSettingsFromIni(HWND hDlg) // tfx get ini info
 
 
 #ifdef _WINDOWS
+    // USN incremental snapshots are opt-in
+    SendMessage(GetDlgItem(hDlg, IDC_CHECKUSN), BM_SETCHECK,
+        (WPARAM)((0 != GetPrivateProfileInt(lpszIniSetup, lpszIniUsnIncremental, 0, lpszRegshotIni)) ? BST_CHECKED : BST_UNCHECKED), (LPARAM)0);
     SendMessage(hDlg, WM_COMMAND, (WPARAM)IDC_CHECKDIR, (LPARAM)0);
 #endif
 
@@ -255,6 +259,12 @@ BOOL SaveSettingsToIni(HWND hDlg) // tfx save settings to ini
     _sntprintf_s(lpszValue, EXTDIRLEN, EXTDIRLEN, TEXT("%d\0"), fDontDisplayInfoAfterShot);
     lpszValue[EXTDIRLEN - 1] = (TCHAR)'\0';  // safety NULL char
     WritePrivateProfileString(lpszIniSetup, lpszIniDontDisplayInfoAfterShot, lpszValue, lpszRegshotIni);
+
+#ifdef _WINDOWS
+    WritePrivateProfileString(lpszIniSetup, lpszIniUsnIncremental,
+        (BST_CHECKED == SendMessage(GetDlgItem(hDlg, IDC_CHECKUSN), BM_GETCHECK, (WPARAM)0, (LPARAM)0)) ? TEXT("1") : TEXT("0"),
+        lpszRegshotIni);
+#endif
 
     MYFREE(lpszValue);
 

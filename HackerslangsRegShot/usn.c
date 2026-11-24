@@ -4,7 +4,7 @@
 
 #define USN_BUFFER_SIZE (64 * 1024)
 
-static BOOL QueryJournal(HANDLE volume, USN_JOURNAL_DATA_V0* journal)
+BOOL UsnQueryJournal(HANDLE volume, USN_JOURNAL_DATA_V0* journal)
 {
     DWORD bytes;
 
@@ -38,7 +38,7 @@ BOOL UsnReadChanges(HANDLE volume, ULONGLONG journalId, USN start,
         SetLastError(ERROR_INVALID_PARAMETER);
         return FALSE;
     }
-    if (!QueryJournal(volume, &journal))
+    if (!UsnQueryJournal(volume, &journal))
         return FALSE;
     if (!JournalContains(&journal, journalId, start)) {
         SetLastError(ERROR_JOURNAL_ENTRY_DELETED);
@@ -113,7 +113,7 @@ BOOL UsnReadChanges(HANDLE volume, ULONGLONG journalId, USN start,
         cursor = returned;
     }
 
-    if (!QueryJournal(volume, &journal))
+    if (!UsnQueryJournal(volume, &journal))
         goto done;
     if (!JournalContains(&journal, journalId, start) || journal.NextUsn < target) {
         SetLastError(ERROR_JOURNAL_ENTRY_DELETED);

@@ -51,6 +51,12 @@
     <ClInclude Include="usn.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="usnbaseline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="usnsnapshot.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="third_party\xxhash\xxhash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -99,6 +105,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="usn.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="usnbaseline.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="usnsnapshot.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
