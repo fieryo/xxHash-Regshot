@@ -7,8 +7,9 @@ Files up to 256 KiB use the one-shot XXH3 path without allocating streaming
 state; larger files stream through a 256 KiB sequential-read buffer.
 XXH3 is non-cryptographic and is not suitable for security verification.
 
-New hive files store hashes and directory scan status in file-content version 4.
-They require this updated application; older builds reject version 4 snapshots.
+New hive files store hashes and directory scan status in file-content version 4
+and registry scan status in key-content version 3.
+They require this updated application; older builds reject these snapshots.
 Version 3 hashes remain readable. Older hive files
 can still be loaded, but their file hashes are unknown, so comparisons
 with them rely on file metadata. Hashing failures are written to the
@@ -31,6 +32,8 @@ The runner also covers Unicode registry reports, registry-value growth,
 damaged/cyclic hive rejection, directory retry, protected-directory handling,
 junction traversal prevention, skipped-directory save/load and comparisons,
 save-write failures, and baseline permissions.
+It also covers unavailable registry subtrees across save/load, subkey-name
+growth, and indexed comparisons of thousands of reversed keys, values, and files.
 Run it elevated for the USN baseline permission tests.
 
 Directory scans request basic directory information and large-fetch
@@ -54,8 +57,27 @@ Unexpected enumeration failures still discard the shot rather than silently
 accepting damaged enumeration data.
 Registry values that grow during enumeration are retried at the same index;
 if they cannot be read after bounded retries, the snapshot is also discarded.
+Registry subkey names use the same bounded retry rule. Keys that cannot be
+opened or queried are retained with an unreadable-contents marker; interrupted
+subkey enumeration marks the parent key. A warning and shot information show
+the affected-key count, and debugger output includes paths and error codes.
+If either shot has such a marker, the key's values and subkeys are excluded
+from comparison, preventing inaccessible subtrees such as `HKLM\DRIVERS` from
+appearing as mass additions or deletions. Markers survive saving/loading.
+Older snapshots remain readable but cannot recover registry keys that older
+builds silently omitted; take two fresh shots with this build.
 Hive loading validates reachable structures, strings, data ranges, and cycles
 before replacing the current shot; unsupported format versions are rejected.
+
+Comparison uses case-insensitive sorted name indexes for sibling registry keys,
+values, and files, rather than repeatedly searching each entire sibling list.
+Snapshots are full captures, not deltas: a 205 MB shot followed by a 216 MB
+shot does not mean an 11 MB file change. They include registry value data and
+file metadata/hashes, not file contents. Windows and background applications
+can change during a full-drive scan, and accessible coverage can vary.
+Save shots and reports outside the scanned directories, or exclude their
+output directory using the file skip list, to avoid comparing the tool's own
+output.
 
 **Shot and Save** captures the shot, then opens a **Save As** dialog. It does
 not automatically create a snapshot in Temp; choose a filename and confirm

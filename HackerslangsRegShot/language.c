@@ -111,6 +111,8 @@ VOID SetTextsToDefaultLanguage(VOID)
     asLangTexts[iszTextCheckUsn].lpszText = TEXT("&USN incremental");
     asLangTexts[iszTextScanWarning].lpszText = TEXT("Snapshot captured. %lu protected, unavailable, or linked directories were not scanned. Their contents will be excluded from comparisons. The snapshot can still be saved.");
     asLangTexts[iszTextUnscannedDirs].lpszText = TEXT("Unscanned directories:");
+    asLangTexts[iszTextRegistryScanWarning].lpszText = TEXT("Snapshot captured. %lu registry keys could not be fully read. Their values and subkeys will be excluded from comparisons. The snapshot can still be saved.");
+    asLangTexts[iszTextUnscannedRegKeys].lpszText = TEXT("Unscanned registry keys:");
     asLangTexts[iszTextCheckUsn].nIDDlgItem = IDC_CHECKUSN;
 
     asLangTexts[iszTextMenuShot].lpszText = TEXT("&Shot");

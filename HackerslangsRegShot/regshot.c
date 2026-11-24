@@ -778,16 +778,128 @@ VOID FreeCompareResult(void)
 //-------------------------------------------------------------
 // Registry comparison engine
 //-------------------------------------------------------------
+static int CompareIndexNames(LPCTSTR left, LPCTSTR right)
+{
+    if (left == right)
+        return 0;
+    if (left == NULL)
+        return -1;
+    if (right == NULL)
+        return 1;
+    return _tcsicmp(left, right);
+}
+
+static int __cdecl CompareIndexEntries(const void* left, const void* right)
+{
+    const NAMEINDEXENTRY* a = left;
+    const NAMEINDEXENTRY* b = right;
+    int result = CompareIndexNames(a->name, b->name);
+
+    if (result != 0)
+        return result;
+    if (a->type != b->type)
+        return a->type < b->type ? -1 : 1;
+    return a->order < b->order ? -1 : a->order != b->order;
+}
+
+NAMEINDEXENTRY* AllocateNameIndex(size_t count)
+{
+    NAMEINDEXENTRY* entries;
+
+    if (count < 2)
+        return NULL;
+    entries = count <= SIZE_MAX / sizeof(*entries) ? MYALLOC(count * sizeof(*entries)) : NULL;
+    if (entries == NULL)
+        OutputDebugString(TEXT("Comparison: name index allocation failed; using sequential matching.\n"));
+    return entries;
+}
+
+VOID SortNameIndex(NAMEINDEXENTRY* entries, size_t count)
+{
+    if (entries != NULL)
+        qsort(entries, count, sizeof(*entries), CompareIndexEntries);
+}
+
+LPVOID FindNameIndex(NAMEINDEXENTRY* entries, size_t count, LPCTSTR name, DWORD type)
+{
+    size_t low = 0, high = count;
+
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        int result = CompareIndexNames(entries[mid].name, name);
+
+        if (result < 0 || (result == 0 && entries[mid].type < type))
+            low = mid + 1;
+        else
+            high = mid;
+    }
+    for (; low < count && entries[low].type == type
+        && CompareIndexNames(entries[low].name, name) == 0; ++low) {
+        if (*entries[low].match == NOMATCH)
+            return entries[low].content;
+    }
+    return NULL;
+}
+
+static NAMEINDEXENTRY* IndexRegKeys(LPKEYCONTENT first, size_t* count)
+{
+    LPKEYCONTENT key;
+    NAMEINDEXENTRY* entries;
+    size_t i = 0;
+
+    *count = 0;
+    for (key = first; key != NULL; key = key->lpBrotherKC)
+        ++*count;
+    entries = AllocateNameIndex(*count);
+    if (entries != NULL) {
+        for (key = first; key != NULL; key = key->lpBrotherKC, ++i) {
+            entries[i].name = key->lpszKeyName;
+            entries[i].type = 0;
+            entries[i].content = key;
+            entries[i].match = &key->fKeyMatch;
+            entries[i].order = i;
+        }
+        SortNameIndex(entries, *count);
+    }
+    return entries;
+}
+
+static NAMEINDEXENTRY* IndexRegValues(LPVALUECONTENT first, size_t* count)
+{
+    LPVALUECONTENT value;
+    NAMEINDEXENTRY* entries;
+    size_t i = 0;
+
+    *count = 0;
+    for (value = first; value != NULL; value = value->lpBrotherVC)
+        ++*count;
+    entries = AllocateNameIndex(*count);
+    if (entries != NULL) {
+        for (value = first; value != NULL; value = value->lpBrotherVC, ++i) {
+            entries[i].name = value->lpszValueName;
+            entries[i].type = value->nTypeCode;
+            entries[i].content = value;
+            entries[i].match = &value->fValueMatch;
+            entries[i].order = i;
+        }
+        SortNameIndex(entries, *count);
+    }
+    return entries;
+}
+
 VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
 {
     LPKEYCONTENT lpKC1;
     LPKEYCONTENT lpKC2;
+    size_t keyCount = 0;
+    NAMEINDEXENTRY* keyIndex = lpStartKC1 != NULL ? IndexRegKeys(lpStartKC2, &keyCount) : NULL;
 
     // Compare keys
     for (lpKC1 = lpStartKC1; NULL != lpKC1; lpKC1 = lpKC1->lpBrotherKC) {
         CompareResult.stcCompared.cKeys++;
         // Find a matching key for KC1
-        for (lpKC2 = lpStartKC2; NULL != lpKC2; lpKC2 = lpKC2->lpBrotherKC) {
+        for (lpKC2 = keyIndex != NULL ? FindNameIndex(keyIndex, keyCount, lpKC1->lpszKeyName, 0) : lpStartKC2;
+            NULL != lpKC2; lpKC2 = keyIndex != NULL ? NULL : lpKC2->lpBrotherKC) {
             // skip KC2 if already matched
             if (NOMATCH != lpKC2->fKeyMatch) {
                 continue;
@@ -802,17 +914,24 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
 
             // Same key name of KC1 found in KC2! Mark KC2 as matched to skip it for the next KC1, then compare their values and sub keys!
             lpKC2->fKeyMatch = ISMATCH;
+            if (lpKC1->nScanError != 0 || lpKC2->nScanError != 0)
+                break;
 
             // Extra local block to reduce stack usage due to recursive calls
             {
                 LPVALUECONTENT lpVC1;
                 LPVALUECONTENT lpVC2;
+                size_t valueCount = 0;
+                NAMEINDEXENTRY* valueIndex = lpKC1->lpFirstVC != NULL
+                    ? IndexRegValues(lpKC2->lpFirstVC, &valueCount) : NULL;
 
                 // Compare values
                 for (lpVC1 = lpKC1->lpFirstVC; NULL != lpVC1; lpVC1 = lpVC1->lpBrotherVC) {
                     CompareResult.stcCompared.cValues++;
                     // Find a matching value for VC1
-                    for (lpVC2 = lpKC2->lpFirstVC; NULL != lpVC2; lpVC2 = lpVC2->lpBrotherVC) {
+                    for (lpVC2 = valueIndex != NULL
+                        ? FindNameIndex(valueIndex, valueCount, lpVC1->lpszValueName, lpVC1->nTypeCode) : lpKC2->lpFirstVC;
+                        NULL != lpVC2; lpVC2 = valueIndex != NULL ? NULL : lpVC2->lpBrotherVC) {
                         // skip VC2 if already matched
                         if (NOMATCH != lpVC2->fValueMatch) {
                             continue;
@@ -867,6 +986,8 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
                     CompareResult.stcAdded.cValues++;
                     CreateNewResult(VALADD, NULL, lpVC2);
                 }
+                if (valueIndex != NULL)
+                    MYFREE(valueIndex);
             }  // End of extra local block
 
             // Compare sub keys if any
@@ -927,6 +1048,8 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
             CompareRegKeys(NULL, lpKC2->lpFirstSubKC);
         }
     }
+    if (keyIndex != NULL)
+        MYFREE(keyIndex);
 
     // Update counters display
     nCurrentTime = GetTickCount();
@@ -1379,6 +1502,81 @@ static LONG EnumerateSnapshotValue(HKEY key, DWORD index, DWORD* nameLength,
     }
 }
 
+static LPKEYCONTENT CreateSnapshotKey(LPREGSHOT shot, LPTSTR name, LPKEYCONTENT father, LPKEYCONTENT* caller)
+{
+    LPKEYCONTENT key = MYALLOC0(sizeof(*key));
+    LPTSTR fullName;
+
+    if (key == NULL) {
+        shot->fIncomplete = TRUE;
+        OutputDebugString(TEXT("Registry snapshot: key allocation failed.\n"));
+        if (father != NULL)
+            MYFREE(name);
+        return NULL;
+    }
+    key->lpFatherKC = father;
+    key->lpszKeyName = name;
+    key->cchKeyName = _tcslen(name);
+    if (lprgszRegSkipStrings[0] != NULL) {
+        if (IsInSkipList(name, lprgszRegSkipStrings)) {
+            FreeAllKeyContents(key);
+            return NULL;
+        }
+        fullName = GetWholeKeyName(key, FALSE);
+        if (fullName == NULL) {
+            shot->fIncomplete = TRUE;
+            OutputDebugString(TEXT("Registry snapshot: key path allocation failed.\n"));
+            FreeAllKeyContents(key);
+            return NULL;
+        }
+        if (IsInSkipList(fullName, lprgszRegSkipStrings)) {
+            MYFREE(fullName);
+            FreeAllKeyContents(key);
+            return NULL;
+        }
+        MYFREE(fullName);
+    }
+    if (caller != NULL)
+        *caller = key;
+    ++shot->stCounts.cKeys;
+    return key;
+}
+
+static VOID MarkRegistryScanError(LPREGSHOT shot, LPKEYCONTENT key, DWORD error)
+{
+    TCHAR message[1024];
+    LPTSTR path = GetWholeKeyName(key, FALSE);
+
+    if (key->nScanError == 0)
+        ++shot->cSkippedRegKeys;
+    key->nScanError = error;
+    _sntprintf_s(message, _countof(message), _TRUNCATE,
+        TEXT("Registry snapshot: contents unavailable for %s (error %lu).\n"),
+        path != NULL ? path : key->lpszKeyName, error);
+    OutputDebugString(message);
+    if (path != NULL)
+        MYFREE(path);
+}
+
+static LONG EnumerateSnapshotKey(HKEY key, DWORD index, DWORD* nameLength)
+{
+    DWORD retry;
+    LONG error;
+
+    for (retry = 0; ; ++retry) {
+        *nameLength = (DWORD)(nStringBufferSize / sizeof(TCHAR));
+        error = RegEnumKeyEx(key, index, lpStringBuffer, nameLength, NULL, NULL, NULL, NULL);
+        if (error != ERROR_MORE_DATA || retry == 8)
+            return error;
+        if (nStringBufferSize > MAXDWORD / 2)
+            return ERROR_NOT_ENOUGH_MEMORY;
+        nStringBufferSize = AdjustBuffer((LPVOID*)&lpStringBuffer, nStringBufferSize,
+            nStringBufferSize * 2, REGSHOT_BUFFER_BLOCK_BYTES);
+        if (lpStringBuffer == NULL)
+            return ERROR_NOT_ENOUGH_MEMORY;
+    }
+}
+
 LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyName, LPKEYCONTENT lpFatherKC, LPKEYCONTENT* lplpCaller)
 {
     LPKEYCONTENT lpKC;
@@ -1394,32 +1592,9 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
         DWORD cchMaxValueName;
         DWORD cbMaxValueData;
 
-        // Create new key content
-        // put in a separate var for later use
-        lpKC = MYALLOC0(sizeof(KEYCONTENT));
-
-        // Set father of current key
-        lpKC->lpFatherKC = lpFatherKC;
-
-        // Set key name
-        lpKC->lpszKeyName = lpszRegKeyName;
-        lpKC->cchKeyName = _tcslen(lpKC->lpszKeyName);
-
-        // Check if key is to be excluded
-        if (NULL != lprgszRegSkipStrings[0]) {  // only if there is something to exclude
-            if ((NULL != lpKC->lpszKeyName) && (IsInSkipList(lpKC->lpszKeyName, lprgszRegSkipStrings))) {
-                FreeAllKeyContents(lpKC);
-                return NULL;
-            }
-
-            lpszFullName = GetWholeKeyName(lpKC, FALSE);
-            if (IsInSkipList(lpszFullName, lprgszRegSkipStrings)) {
-                MYFREE(lpszFullName);
-                FreeAllKeyContents(lpKC);
-                return NULL;
-            }
-            MYFREE(lpszFullName);
-        }
+        lpKC = CreateSnapshotKey(lpShot, lpszRegKeyName, lpFatherKC, lplpCaller);
+        if (lpKC == NULL)
+            return NULL;
 
         // Examine key for values and sub keys, get counts and also maximum lengths of names plus value data
         nErrNo = RegQueryInfoKey(
@@ -1437,18 +1612,9 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
             NULL
         );
         if (ERROR_SUCCESS != nErrNo) {
-            OutputDebugString(TEXT("Registry snapshot: key information could not be read.\n"));
-            FreeAllKeyContents(lpKC);
-            return NULL;
+            MarkRegistryScanError(lpShot, lpKC, nErrNo);
+            return lpKC;
         }
-
-        // Copy pointer to current key into caller's pointer
-        if (NULL != lplpCaller) {
-            *lplpCaller = lpKC;
-        }
-
-        // Increase key count
-        lpShot->stCounts.cKeys++;
 
         // Copy the registry values of the current key
         if (0 < cValues) {
@@ -1592,6 +1758,11 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
         // Get buffer for maximum sub key name length
         nSourceSize = cchMaxSubKeyName * sizeof(TCHAR);
         nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+        if (lpStringBuffer == NULL) {
+            lpShot->fIncomplete = TRUE;
+            OutputDebugString(TEXT("Registry snapshot: subkey buffer allocation failed.\n"));
+            return lpKC;
+        }
 
         // Get registry sub keys
         lplpKCPrev = &lpKC->lpFirstSubKC;
@@ -1604,20 +1775,19 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
 #endif
 
                 // Enumerate sub key
-                cchSubKeyName = (DWORD)(nStringBufferSize / sizeof(TCHAR));
-                nErrNo = RegEnumKeyEx(hRegKey, i,
-                    lpStringBuffer,
-                    &cchSubKeyName,  // in TCHARs; in *including* and out *excluding* NULL char
-                    NULL,
-                    NULL,
-                    NULL,
-                    NULL);
+                nErrNo = EnumerateSnapshotKey(hRegKey, i, &cchSubKeyName);
                 if (ERROR_NO_MORE_ITEMS == nErrNo) {
                     break;
                 }
                 if (ERROR_SUCCESS != nErrNo) {
-                    OutputDebugString(TEXT("Registry snapshot: subkey enumeration failed.\n"));
-                    continue;
+                    if (nErrNo == ERROR_NOT_ENOUGH_MEMORY || nErrNo == ERROR_MORE_DATA) {
+                        lpShot->fIncomplete = TRUE;
+                        OutputDebugString(TEXT("Registry snapshot: subkey enumeration retries failed.\n"));
+                    }
+                    else {
+                        MarkRegistryScanError(lpShot, lpKC, nErrNo);
+                    }
+                    break;
                 }
                 lpStringBuffer[cchSubKeyName] = (TCHAR)'\0';  // safety NULL char
 
@@ -1625,6 +1795,11 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
                 lpszRegSubKeyName = NULL;
                 if (0 < cchSubKeyName) {
                     lpszRegSubKeyName = MYALLOC0((cchSubKeyName + 1) * sizeof(TCHAR));
+                    if (lpszRegSubKeyName == NULL) {
+                        lpShot->fIncomplete = TRUE;
+                        OutputDebugString(TEXT("Registry snapshot: subkey name allocation failed.\n"));
+                        break;
+                    }
                     _tcscpy_s(lpszRegSubKeyName, cchSubKeyName + 1, lpStringBuffer);
                 }
 
@@ -1646,13 +1821,17 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
 
             nErrNo = RegOpenKeyEx(hRegKey, lpszRegSubKeyName, 0, KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS, &hRegSubKey);
             if (ERROR_SUCCESS != nErrNo) {
-                OutputDebugString(TEXT("Registry snapshot: subkey could not be opened.\n"));
-                MYFREE(lpszRegSubKeyName);
-                continue;
+                LONG openError = nErrNo;
+                lpKCSub = CreateSnapshotKey(lpShot, lpszRegSubKeyName, lpKC, lplpKCPrev);
+                if (lpKCSub != NULL)
+                    MarkRegistryScanError(lpShot, lpKCSub, openError);
             }
-
-            lpKCSub = GetRegistrySnap(lpShot, hRegSubKey, lpszRegSubKeyName, lpKC, lplpKCPrev);
-            RegCloseKey(hRegSubKey);
+            else {
+                lpKCSub = GetRegistrySnap(lpShot, hRegSubKey, lpszRegSubKeyName, lpKC, lplpKCPrev);
+                RegCloseKey(hRegSubKey);
+            }
+            if (lpShot->fIncomplete)
+                break;
 
             // Set "lpBrotherKC" pointer for storing the next brother's pointer
             if (NULL != lpKCSub) {
@@ -1773,6 +1952,18 @@ VOID Shot(LPREGSHOT lpShot)
     lpShot->fLoaded = FALSE;
 
     UI_ShowHideCounters(SW_HIDE);
+    if (lpShot->cSkippedRegKeys != 0) {
+        TCHAR warning[384];
+
+        _sntprintf_s(warning, _countof(warning), _TRUNCATE,
+            asLangTexts[iszTextRegistryScanWarning].lpszText,
+            lpShot->cSkippedRegKeys);
+#ifdef _WINDOWS
+        MessageBox(hWnd, warning, asLangTexts[iszTextWarning].lpszText, MB_OK | MB_ICONWARNING);
+#else
+        _tprintf(TEXT("%s\n"), warning);
+#endif
+    }
     if (lpShot->cSkippedDirs != 0) {
         TCHAR warning[384];
 
@@ -1948,6 +2139,7 @@ VOID SaveRegKeys(LPREGSHOT lpShot, LPKEYCONTENT lpKC, DWORD nFPFatherKey, DWORD 
 
         // New since key content version 2
         sKC.nKeyNameLen = 0;
+        sKC.nScanError = lpKC->nScanError;
 
         // Extra local block to reduce stack usage due to recursive calls
         {
@@ -2478,6 +2670,9 @@ VOID SaveShot(LPREGSHOT lpShot)
 
             // Increase key count
             lpShot->stCounts.cKeys++;
+            lpKC->nScanError = sKC.nScanError;
+            if (lpKC->nScanError != 0)
+                ++lpShot->cSkippedRegKeys;
 
             // Copy the value contents of the current key
             if (0 != sKC.ofsFirstValue) {
@@ -2736,7 +2931,8 @@ VOID SaveShot(LPREGSHOT lpShot)
             || header->nVCVersion < 1 || header->nVCVersion > VALUECONTENT_VERSION_CURRENT
             || header->nHFVersion != HEADFILE_VERSION_CURRENT
             || header->nFCVersion < 1 || header->nFCVersion > FILECONTENT_VERSION_CURRENT
-            || header->nKCSize != (header->nKCVersion < 2 ? offsetof(SAVEKEYCONTENT, nKeyNameLen) : sizeof(SAVEKEYCONTENT))
+            || header->nKCSize != (header->nKCVersion < 2 ? offsetof(SAVEKEYCONTENT, nKeyNameLen)
+                : header->nKCVersion < 3 ? offsetof(SAVEKEYCONTENT, nScanError) : sizeof(SAVEKEYCONTENT))
             || header->nVCSize != (header->nVCVersion < 2 ? offsetof(SAVEVALUECONTENT, nValueNameLen) : sizeof(SAVEVALUECONTENT))
             || header->nHFSize != sizeof(SAVEHEADFILE)
             || header->nFCSize != (header->nFCVersion < 2 ? offsetof(SAVEFILECONTENT, nFileNameLen)
@@ -3270,7 +3466,7 @@ loadAllocationFailed:
         }
 
         lpszInfoBox = MYALLOC0(SIZEOF_INFOBOX * sizeof(TCHAR));
-        _sntprintf_s(lpszInfoBox, SIZEOF_INFOBOX, SIZEOF_INFOBOX, TEXT("%s %04d-%02d-%02d %02d:%02d:%02d\n%s %s\n%s %s\n%s %u\n%s %u\n%s %u\n%s %u\n%s %lu\n%s\0"),
+        _sntprintf_s(lpszInfoBox, SIZEOF_INFOBOX, SIZEOF_INFOBOX, TEXT("%s %04d-%02d-%02d %02d:%02d:%02d\n%s %s\n%s %s\n%s %u\n%s %u\n%s %u\n%s %u\n%s %lu\n%s %lu\n%s\0"),
             asLangTexts[iszTextDateTime].lpszText,
             lpShot->systemtime.wYear, lpShot->systemtime.wMonth, lpShot->systemtime.wDay,
             lpShot->systemtime.wHour, lpShot->systemtime.wMinute, lpShot->systemtime.wSecond,
@@ -3281,6 +3477,7 @@ loadAllocationFailed:
             asLangTexts[iszTextDir].lpszText, lpShot->stCounts.cDirs,
             asLangTexts[iszTextFile].lpszText, lpShot->stCounts.cFiles,
             asLangTexts[iszTextUnscannedDirs].lpszText, lpShot->cSkippedDirs,
+            asLangTexts[iszTextUnscannedRegKeys].lpszText, lpShot->cSkippedRegKeys,
             lpszLoaded
         );
         lpszInfoBox[SIZEOF_INFOBOX - 1] = (TCHAR)'\0';  // safety NULL char
