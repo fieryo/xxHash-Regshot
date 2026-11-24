@@ -1,5 +1,6 @@
 #include "../HackerslangsRegShot/common.h"
 
+extern size_t nDataBufferSize;
 static int valueCalls;
 static DWORD firstValueDataSize;
 static BOOL keepGrowing;
@@ -15,6 +16,28 @@ static HKEY registryRoot, queryDeniedKey;
 static int keyCalls;
 static BOOL keepKeyGrowing;
 static size_t nameComparisons;
+static BOOL profileRegistry;
+static BOOL profileLegacyCapacity;
+static ULONGLONG profileDataBytes;
+static DWORD profileMaxDataCapacity;
+typedef struct {
+    ULONGLONG calls;
+    LONGLONG ticks;
+} REGISTRY_PROFILE;
+static REGISTRY_PROFILE profileOpen, profileClose, profileInfo, profileValues, profileKeys, profileAlloc;
+
+#define PROFILE_REGISTRY_RETURN(profile, call) do { \
+    LARGE_INTEGER start, end; \
+    LONG profileResult; \
+    if (!profileRegistry) \
+        return (call); \
+    QueryPerformanceCounter(&start); \
+    profileResult = (call); \
+    QueryPerformanceCounter(&end); \
+    ++(profile).calls; \
+    (profile).ticks += end.QuadPart - start.QuadPart; \
+    return profileResult; \
+} while (0)
 
 static int CountNameCompare(LPCTSTR left, LPCTSTR right)
 {
@@ -24,11 +47,21 @@ static int CountNameCompare(LPCTSTR left, LPCTSTR right)
 
 static LPVOID WINAPI FakeHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
 {
+    LARGE_INTEGER start, end;
+    LPVOID result;
+
     if (failAllocationAfter == 0)
         return NULL;
     if (failAllocationAfter > 0)
         --failAllocationAfter;
-    return HeapAlloc(heap, flags, size);
+    if (!profileRegistry)
+        return HeapAlloc(heap, flags, size);
+    QueryPerformanceCounter(&start);
+    result = HeapAlloc(heap, flags, size);
+    QueryPerformanceCounter(&end);
+    ++profileAlloc.calls;
+    profileAlloc.ticks += end.QuadPart - start.QuadPart;
+    return result;
 }
 
 static BOOL WINAPI FakeReadFile(HANDLE file, LPVOID data, DWORD size, LPDWORD read, LPOVERLAPPED overlapped)
@@ -68,8 +101,17 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 {
     (void)key;
     (void)reserved;
-    if (!retryValue)
-        return RegEnumValue(key, index, name, length, reserved, type, data, size);
+    if (!retryValue) {
+        if (profileRegistry) {
+            if (profileLegacyCapacity)
+                *size = (DWORD)nDataBufferSize;
+            profileDataBytes += *size;
+            if (*size > profileMaxDataCapacity)
+                profileMaxDataCapacity = *size;
+        }
+        PROFILE_REGISTRY_RETURN(profileValues,
+            RegEnumValue(key, index, name, length, reserved, type, data, size));
+    }
     assert(index == 7);
     if (++valueCalls == 1)
         firstValueDataSize = *size;
@@ -92,6 +134,9 @@ static LONG WINAPI FakeRegOpenKeyEx(HKEY key, LPCTSTR name, DWORD options, REGSA
 
     if (registryMode == 1 && _tcscmp(name, TEXT("DRIVERS")) == 0)
         return ERROR_ACCESS_DENIED;
+    if (profileRegistry) {
+        PROFILE_REGISTRY_RETURN(profileOpen, RegOpenKeyEx(key, name, options, access, result));
+    }
     error = RegOpenKeyEx(key, name, options, access, result);
     if (registryMode == 2 && error == ERROR_SUCCESS && _tcscmp(name, TEXT("DRIVERS")) == 0)
         queryDeniedKey = *result;
@@ -106,8 +151,9 @@ static LONG WINAPI FakeRegQueryInfoKey(HKEY key, LPTSTR className, LPDWORD class
         queryDeniedKey = NULL;
         return ERROR_ACCESS_DENIED;
     }
-    return RegQueryInfoKey(key, className, classLength, reserved, subKeys, maxSubKey, maxClass,
-        values, maxValueName, maxData, security, writeTime);
+    PROFILE_REGISTRY_RETURN(profileInfo,
+        RegQueryInfoKey(key, className, classLength, reserved, subKeys, maxSubKey, maxClass,
+            values, maxValueName, maxData, security, writeTime));
 }
 
 static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD length,
@@ -124,7 +170,13 @@ static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD 
         *length = 8;
         return ERROR_SUCCESS;
     }
-    return RegEnumKeyEx(key, index, name, length, reserved, className, classLength, writeTime);
+    PROFILE_REGISTRY_RETURN(profileKeys,
+        RegEnumKeyEx(key, index, name, length, reserved, className, classLength, writeTime));
+}
+
+static LONG WINAPI ProfileRegCloseKey(HKEY key)
+{
+    PROFILE_REGISTRY_RETURN(profileClose, RegCloseKey(key));
 }
 
 #undef RegEnumValue
@@ -135,6 +187,7 @@ static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 #define RegOpenKeyEx FakeRegOpenKeyEx
 #undef RegQueryInfoKey
 #define RegQueryInfoKey FakeRegQueryInfoKey
+#define RegCloseKey ProfileRegCloseKey
 #undef _tcsicmp
 #define _tcsicmp CountNameCompare
 #undef GetOpenFileName
@@ -148,14 +201,37 @@ static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 #include "../HackerslangsRegShot/regshot.c"
 #include "../HackerslangsRegShot/usnsnapshot.c"
 #include "../HackerslangsRegShot/fileenum.h"
+#include "../HackerslangsRegShot/checksum.h"
 
 static int enumerationMode;
 static int classicRestarts;
 static int directoryOpens;
+static int hashCalls, reuseCalls, idRequests;
+static BOOL offerCachedHash;
+
+static BOOL CountChecksumFromFile(LPCTSTR path, QWORD* checksum)
+{
+    ++hashCalls;
+    return ChecksumFromFile(path, checksum);
+}
+
+static BOOL FakeReuseHash(const USN_SNAPSHOT* snapshot, DWORD volume, ULONGLONG fileId,
+    ULONGLONG size, ULONGLONG writeTime, DWORD attributes, ULONGLONG* hash)
+{
+    ++reuseCalls;
+    if (offerCachedHash) {
+        *hash = 0x1234;
+        return TRUE;
+    }
+    return UsnSnapshotReuseHash(snapshot, volume, fileId, size, writeTime, attributes, hash);
+}
+
 static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds,
     const SNAPSHOT_DIR* parent, ULONGLONG directoryId, WIN32_FIND_DATA* data, ULONGLONG* id)
 {
     ++directoryOpens;
+    if (wantIds)
+        ++idRequests;
     if (enumerationMode == 3 || enumerationMode == 5) {
         SetLastError(enumerationMode == 3 ? ERROR_ACCESS_DENIED : ERROR_READ_FAULT);
         return FALSE;
@@ -167,6 +243,18 @@ static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds
         _tcscpy_s(data->cFileName, MAX_PATH, TEXT("loop"));
         data->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
         *id = 0;
+        return TRUE;
+    }
+    if (enumerationMode == 7) {
+        assert(wantIds);
+        ZeroMemory(dir, sizeof(*dir));
+        dir->find = dir->directory = INVALID_HANDLE_VALUE;
+        dir->ids = TRUE;
+        ZeroMemory(data, sizeof(*data));
+        _tcscpy_s(data->cFileName, MAX_PATH, TEXT("file"));
+        data->dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
+        data->nFileSizeLow = 2;
+        *id = 123;
         return TRUE;
     }
     if (enumerationMode == 1 && wantIds) {
@@ -186,7 +274,7 @@ static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds
 
 static BOOL FakeSnapshotDirNext(SNAPSHOT_DIR* dir, WIN32_FIND_DATA* data, ULONGLONG* id)
 {
-    if (enumerationMode == 4) {
+    if (enumerationMode == 4 || enumerationMode == 7) {
         SetLastError(ERROR_NO_MORE_FILES);
         return FALSE;
     }
@@ -199,9 +287,11 @@ static BOOL FakeSnapshotDirNext(SNAPSHOT_DIR* dir, WIN32_FIND_DATA* data, ULONGL
 
 static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD serial)
 {
-    return enumerationMode == 1 ? 1 : UsnSnapshotVolume(snapshot, guid, serial);
+    return enumerationMode == 1 || enumerationMode == 7 ? 1 : UsnSnapshotVolume(snapshot, guid, serial);
 }
 
+#define ChecksumFromFile CountChecksumFromFile
+#define UsnSnapshotReuseHash FakeReuseHash
 #define SnapshotDirOpen FakeSnapshotDirOpen
 #define SnapshotDirNext FakeSnapshotDirNext
 #define UsnSnapshotVolume FakeSnapshotVolume
@@ -209,6 +299,8 @@ static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD
 #undef SnapshotDirOpen
 #undef SnapshotDirNext
 #undef UsnSnapshotVolume
+#undef ChecksumFromFile
+#undef UsnSnapshotReuseHash
 
 static void TestRegistryFormatting(void)
 {
@@ -626,6 +718,140 @@ static void TestPathTrimming(void)
     assert(TrimSnapshotPath(root) && _tcscmp(root, TEXT("C:")) == 0);
 }
 
+static void TestMetadataOnly(void)
+{
+    TCHAR temp[MAX_PATH], path[MAX_PATH], filePath[MAX_PATH];
+    REGSHOT shot = { 0 };
+    USN_SNAPSHOT snapshot = { 0 };
+    HANDLE file;
+    DWORD written;
+    FILECONTENT before, after;
+
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    _tcscpy_s(filePath, _countof(filePath), path);
+    _tcscat_s(filePath, _countof(filePath), TEXT("\\file"));
+    file = CreateFile(filePath, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(file != INVALID_HANDLE_VALUE);
+    assert(WriteFile(file, "hi", 2, &written, NULL) && written == 2);
+    CloseHandle(file);
+    hashCalls = reuseCalls = idRequests = 0;
+    offerCachedHash = TRUE;
+    enumerationMode = 7;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && reuseCalls == 1 && hashCalls == 0);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSum == 0x1234);
+    shot.lpUsnSnapshot = NULL;
+    FreeShot(&shot);
+
+    shot.fMetadataOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    hashCalls = reuseCalls = idRequests = 0;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 1 && idRequests == 1);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nFileId == 123);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nUsnVolume == 1);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->fUsnFlags == 0);
+    FinishUsnScan(&shot);
+    assert(hashCalls == 0 && reuseCalls == 0);
+    assert(CollectUsnEntries(shot.lpHF->lpFirstFC, NULL, 0) == 0);
+    shot.lpUsnSnapshot = NULL;
+    shot.fFilled = TRUE;
+    shot.stCounts.cAll = shot.stCounts.cDirs + shot.stCounts.cFiles;
+    assert(GetTempFileName(temp, TEXT("rs"), 0, hivePath));
+    SaveShot(&shot);
+    assert(!fHiveWriteFailed);
+    FreeShot(&shot);
+    assert(LoadShot(&shot));
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    before = after = *shot.lpHF->lpFirstFC->lpFirstSubFC;
+    before.nChkSum = 1;
+    after.nChkSum = 2;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcChanged.cFiles == 0);
+    FreeCompareResult();
+    after.fFileMatch = NOMATCH;
+    ++after.nFileSizeLow;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcModified.cFiles == 1);
+    FreeCompareResult();
+    after.fFileMatch = NOMATCH;
+    after.nFileSizeLow = before.nFileSizeLow;
+    ++after.nWriteDateTimeLow;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcModified.cFiles == 1);
+    FreeCompareResult();
+    FreeShot(&shot);
+    assert(DeleteFile(hivePath));
+
+    enumerationMode = 0;
+    offerCachedHash = FALSE;
+    shot.fMetadataOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 1);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    assert(hashCalls == 0 && reuseCalls == 0);
+    shot.lpUsnSnapshot = NULL;
+    FreeShot(&shot);
+    shot.fMetadataOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(&shot, filePath, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.lpHF->lpFirstFC->nChkSumUnknown && hashCalls == 0);
+    FreeShot(&shot);
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(&shot, filePath, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && !shot.lpHF->lpFirstFC->nChkSumUnknown && hashCalls == 1);
+    FreeShot(&shot);
+    assert(DeleteFile(filePath) && RemoveDirectory(path));
+}
+
+BOOL CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam);
+
+static void TestIndependentUsnOption(void)
+{
+    const int ids[] = { IDC_CHECKDIR, IDC_CHECKUSN, IDC_CHECKHASH, IDC_EDITDIR, IDC_BROWSE1 };
+    HWND parent, previousWindow = hWnd;
+    TCHAR temp[MAX_PATH], path[MAX_PATH];
+    REGSHOT shot = { 0 };
+    size_t i;
+
+    parent = CreateWindow(TEXT("STATIC"), TEXT("Regshot options test"), 0,
+        0, 0, 1, 1, NULL, NULL, NULL, NULL);
+    assert(parent != NULL);
+    for (i = 0; i < _countof(ids); ++i) {
+        assert(CreateWindow(i == 3 ? TEXT("EDIT") : TEXT("BUTTON"), TEXT(""),
+            WS_CHILD | (i < 3 ? BS_AUTOCHECKBOX : 0), 0, 0, 1, 1,
+            parent, (HMENU)(INT_PTR)ids[i], NULL, NULL) != NULL);
+    }
+    DialogProc(parent, WM_COMMAND, IDC_CHECKDIR, 0);
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_CHECKUSN)));
+    assert(!IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
+    SendDlgItemMessage(parent, IDC_CHECKUSN, BM_SETCHECK, BST_CHECKED, 0);
+    DialogProc(parent, WM_COMMAND, IDC_CHECKUSN, 0);
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_CHECKHASH)));
+    assert(SendDlgItemMessage(parent, IDC_CHECKDIR, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    SetDlgItemText(parent, IDC_EDITDIR, path);
+    hWnd = parent;
+    hashCalls = 0;
+    FileShot(&shot);
+    assert(shot.fMetadataOnly && !shot.fIncomplete && shot.stCounts.cDirs == 1 && hashCalls == 0);
+    FreeShot(&shot);
+    SendDlgItemMessage(parent, IDC_CHECKUSN, BM_SETCHECK, BST_UNCHECKED, 0);
+    DialogProc(parent, WM_COMMAND, IDC_CHECKUSN, 0);
+    assert(!IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
+    hWnd = previousWindow;
+    assert(DestroyWindow(parent) && RemoveDirectory(path));
+}
+
 static void TestEnumerationRecovery(void)
 {
     TCHAR temp[MAX_PATH], path[MAX_PATH], first[MAX_PATH], second[MAX_PATH];
@@ -800,7 +1026,64 @@ static void TestBaselinePermissions(void)
     assert(DeleteFile(path));
 }
 
-int main(void)
+static void PrintRegistryProfile(const char* label, REGISTRY_PROFILE* profile, LONGLONG frequency)
+{
+    printf("%-18s %10llu calls %10.3f seconds\n",
+        label, profile->calls, (double)profile->ticks / (double)frequency);
+}
+
+static int BenchmarkRegistry(void)
+{
+    REGSHOT shot = { 0 };
+    LARGE_INTEGER frequency, start, end;
+    LPTSTR paths[] = { TEXT("HKLM"), TEXT("HKU") };
+    HKEY roots[] = { HKEY_LOCAL_MACHINE, HKEY_USERS };
+    size_t i;
+
+    assert(QueryPerformanceFrequency(&frequency));
+    printf("Registry profile: %s buffer capacity; full capture, no skip list; counts and timings only.\n",
+        profileLegacyCapacity ? "legacy shared" : "per-key");
+    puts("Registry contents are not printed or saved.");
+    profileRegistry = TRUE;
+    QueryPerformanceCounter(&start);
+    for (i = 0; i < _countof(roots); ++i) {
+        REGSHOT part = { 0 };
+        LARGE_INTEGER partStart, partEnd;
+
+        QueryPerformanceCounter(&partStart);
+        GetRegistrySnap(&part, roots[i], i == 0 ? lpszHKLMShort : lpszHKUShort,
+            NULL, i == 0 ? &shot.lpHKLM : &shot.lpHKU);
+        QueryPerformanceCounter(&partEnd);
+        _tprintf(TEXT("%s: keys=%lu values=%lu unavailable=%lu incomplete=%u time=%.3fs\n"),
+            paths[i], part.stCounts.cKeys, part.stCounts.cValues, part.cSkippedRegKeys,
+            part.fIncomplete, (double)(partEnd.QuadPart - partStart.QuadPart) / (double)frequency.QuadPart);
+        shot.fIncomplete |= part.fIncomplete;
+    }
+    QueryPerformanceCounter(&end);
+    profileRegistry = FALSE;
+    printf("Total capture: %.3f seconds\n", (double)(end.QuadPart - start.QuadPart) / (double)frequency.QuadPart);
+    PrintRegistryProfile("RegOpenKeyEx", &profileOpen, frequency.QuadPart);
+    PrintRegistryProfile("RegCloseKey", &profileClose, frequency.QuadPart);
+    PrintRegistryProfile("RegQueryInfoKey", &profileInfo, frequency.QuadPart);
+    PrintRegistryProfile("RegEnumValue", &profileValues, frequency.QuadPart);
+    PrintRegistryProfile("RegEnumKeyEx", &profileKeys, frequency.QuadPart);
+    PrintRegistryProfile("HeapAlloc", &profileAlloc, frequency.QuadPart);
+    printf("RegEnumValue mean offered data capacity: %.0f bytes; maximum: %lu bytes\n",
+        profileValues.calls != 0 ? (double)profileDataBytes / (double)profileValues.calls : 0,
+        profileMaxDataCapacity);
+    {
+        BOOL incomplete = shot.fIncomplete;
+
+        FreeShot(&shot);
+        MYFREE(lpStringBuffer);
+        MYFREE(lpDataBuffer);
+        lpStringBuffer = NULL;
+        lpDataBuffer = NULL;
+        return incomplete ? 1 : 0;
+    }
+}
+
+int main(int argc, char** argv)
 {
     TCHAR message[REGSHOT_MESSAGE_LENGTH];
     TCHAR dirs[EXTDIRLEN], openDir[MAX_PATH], saveDir[MAX_PATH];
@@ -816,6 +1099,12 @@ int main(void)
     lprgszFileSkipStrings = noSkips;
     SetTextsToDefaultLanguage();
     nLastTime = GetTickCount();
+    if (argc == 2 && strcmp(argv[1], "--benchmark-registry-legacy-capacity") == 0) {
+        profileLegacyCapacity = TRUE;
+        return BenchmarkRegistry();
+    }
+    if (argc == 2 && strcmp(argv[1], "--benchmark-registry") == 0)
+        return BenchmarkRegistry();
     puts("Testing registry formatting");
     TestRegistryFormatting();
     puts("Testing value growth");
@@ -832,6 +1121,10 @@ int main(void)
     TestLoadFailures();
     puts("Testing path trimming");
     TestPathTrimming();
+    puts("Testing USN metadata-only snapshots");
+    TestMetadataOnly();
+    puts("Testing independent USN option");
+    TestIndependentUsnOption();
     puts("Testing enumeration recovery");
     TestEnumerationRecovery();
     puts("Testing skipped-directory comparisons");

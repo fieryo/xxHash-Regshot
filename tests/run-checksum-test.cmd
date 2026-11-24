@@ -30,7 +30,7 @@ usnbaseline_test.exe
 set result=%errorlevel%
 del /q usnbaseline_test.exe usnbaseline_test.obj usnbaseline.obj xxhash.obj
 if not "%result%"=="0" exit /b %result%
-cl /nologo /W4 /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
+cl /nologo /W4 /O2 /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
   snapshot_logic_test.c ^
   ..\HackerslangsRegShot\checksum.c ..\HackerslangsRegShot\fileenum.c ^
   ..\HackerslangsRegShot\language.c ..\HackerslangsRegShot\misc.c ^
@@ -43,6 +43,17 @@ cl /nologo /W4 /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
 if errorlevel 1 exit /b 1
 snapshot_logic_test.exe
 set result=%errorlevel%
+if not "%result%"=="0" exit /b %result%
+if "%REGSHOT_BENCHMARK_REGISTRY%"=="1" (
+  snapshot_logic_test.exe --benchmark-registry-legacy-capacity
+  if errorlevel 1 exit /b 1
+  snapshot_logic_test.exe --benchmark-registry
+  if errorlevel 1 exit /b 1
+  snapshot_logic_test.exe --benchmark-registry
+  if errorlevel 1 exit /b 1
+  snapshot_logic_test.exe --benchmark-registry-legacy-capacity
+  if errorlevel 1 exit /b 1
+)
 del /q snapshot_logic_test.exe snapshot_logic_test.obj checksum.obj fileenum.obj language.obj misc.obj ^
   output.obj setup.obj ui.obj winmain.obj work.obj usn.obj usnbaseline.obj usnsnapshot.obj xxhash.obj xxh_x86dispatch.obj
 popd
