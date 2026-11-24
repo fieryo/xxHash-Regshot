@@ -173,6 +173,7 @@ BOOL CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             CloseHandle(g_hWorkerThread);
             g_hWorkerThread = NULL;
         }
+        EnableWindow(hDlg, TRUE);
 
         if (g_hWorkerCancelEvent) {
             CloseHandle(g_hWorkerCancelEvent);
@@ -197,6 +198,9 @@ BOOL CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         return TRUE;
     }
     case WM_COMMAND:
+        if (g_hWorkerThread) {
+            return TRUE;
+        }
         switch (LOWORD(wParam)) {
         case IDC_1STSHOT:  // Button: "1st Shot"
             lpMenuShot = &Shot1;  // Popup window messages are for 1st Shot
@@ -215,15 +219,17 @@ BOOL CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             return(TRUE);
                                             
         case IDM_SHOTONLY:  // Shot Popup Menu: "Shot"
-			CreateWorkerThread(hWnd, FUNC_SHOTONLY, (void*)lpMenuShot, g_hWorkerCancelEvent);
-            EnableWindow(GetDlgItem(hDlg, IDC_QUIT), TRUE);
-            UI_EnableMainButtons();
+            g_hWorkerThread = CreateWorkerThread(hWnd, FUNC_SHOTONLY, (void*)lpMenuShot, g_hWorkerCancelEvent);
+            if (g_hWorkerThread) {
+                EnableWindow(hDlg, FALSE);
+            }
             return(TRUE);
 
         case IDM_SHOTSAVE:
-	        CreateWorkerThread(hWnd, FUNC_SHOTSAVE, (void*)lpMenuShot, g_hWorkerCancelEvent);
-            EnableWindow(GetDlgItem(hDlg, IDC_QUIT), TRUE);
-            UI_EnableMainButtons();
+            g_hWorkerThread = CreateWorkerThread(hWnd, FUNC_SHOTSAVE, (void*)lpMenuShot, g_hWorkerCancelEvent);
+            if (g_hWorkerThread) {
+                EnableWindow(hDlg, FALSE);
+            }
             return(TRUE);
 
         case IDM_LOAD:  // Shot Popup Menu: "Load..."

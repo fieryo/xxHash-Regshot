@@ -1,11 +1,11 @@
 #include "common.h"
 #include "work.h"
 
-VOID CreateWorkerThread(HWND hWnd, unsigned int hFunc, void* funcArgs, HANDLE hCancelEvent) {
+HANDLE CreateWorkerThread(HWND hWnd, unsigned int hFunc, void* funcArgs, HANDLE hCancelEvent) {
     WorkerData* data = (WorkerData*)MYALLOC0(sizeof(WorkerData));
     if (!data) {
         MessageBox(hWnd, TEXT("Out of memory"), TEXT("Error"), MB_ICONERROR);
-        return;
+        return NULL;
     }
     ZeroMemory(data, sizeof(*data));
     data->hWnd = hWnd;
@@ -17,8 +17,9 @@ VOID CreateWorkerThread(HWND hWnd, unsigned int hFunc, void* funcArgs, HANDLE hC
     if (!hThread) {
         MYFREE(data);
         MessageBox(hWnd, TEXT("Failed to create worker thread"), TEXT("Error"), MB_ICONERROR);
-        return;
+        return NULL;
     }
+    return hThread;
 }
 
 // Background Worker Thread
