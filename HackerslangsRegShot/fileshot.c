@@ -22,6 +22,7 @@
 
 #include "common.h"
 #include "checksum.h"
+#include "fileenum.h"
 
 // Workaround for older Platform/Windows SDKs (e.g. VS 6.0)
 #ifndef INVALID_FILE_ATTRIBUTES
@@ -500,7 +501,7 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
         }
 
         _tcscat_s(lpszFindFileName, _tcslen(lpszFindFileName) + 4 + 1, TEXT("\\*.*"));
-        hFile = FindFirstFile(lpszFindFileName, &FindData);
+        hFile = FindFirstSnapshotFile(lpszFindFileName, &FindData);
         if (lpszFindFileName != lpszFullName) {
             MYFREE(lpszFindFileName);
         }
