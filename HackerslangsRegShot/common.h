@@ -189,6 +189,7 @@ struct _FILECONTENT {
     DWORD  nFileAttributes;                 // File attributes (e.g. directory)
     QWORD nChkSum;                          // XXH3-64 of file contents
     BOOL nChkSumUnknown;                    // Hash was unavailable
+    DWORD nScanError;                      // Directory contents unavailable; do not compare children
     struct _FILECONTENT FAR* lpFirstSubFC;  // Pointer to file's first sub file
     struct _FILECONTENT FAR* lpBrotherFC;   // Pointer to file's brother
     struct _FILECONTENT FAR* lpFatherFC;    // Pointer to file's father
@@ -226,6 +227,7 @@ struct _REGSHOT {
     BOOL          fFilled;                  // Flag if Shot was done/loaded (even if result is empty)
     BOOL          fLoaded;                  // Flag if Shot was loaded from a file
     BOOL          fIncomplete;              // Enumeration failed; the shot must not be compared/saved
+    DWORD         cSkippedDirs;             // Unreadable directories and directory reparse points
     struct USN_SNAPSHOT* lpUsnSnapshot;     // USN volume checkpoints if taken in USN mode
 };
 typedef struct _REGSHOT REGSHOT, FAR* LPREGSHOT;
@@ -420,6 +422,7 @@ struct _SAVEFILECONTENT {
     DWORD nHashLow;       // (v3) XXH3-64 low 32 bits
     DWORD nHashHigh;      // (v3) XXH3-64 high 32 bits
     DWORD fHashValid;     // (v3) 1 if the hash was successfully calculated
+    DWORD nScanError;     // (v4) Win32 error for unscanned directory contents, 0 if complete
     // ^^^ here the file content structure can be extended
     // * increase the version number for the new file content format
     // * place a comment with a reference to the new version before the new fields
@@ -432,7 +435,8 @@ typedef struct _SAVEFILECONTENT SAVEFILECONTENT, FAR* LPSAVEFILECONTENT;
 #define FILECONTENT_VERSION_1 1
 #define FILECONTENT_VERSION_2 2
 #define FILECONTENT_VERSION_3 3
-#define FILECONTENT_VERSION_CURRENT FILECONTENT_VERSION_3
+#define FILECONTENT_VERSION_4 4
+#define FILECONTENT_VERSION_CURRENT FILECONTENT_VERSION_4
 
 
 // Adjusted for filecontent saving. 1.8
@@ -646,6 +650,8 @@ enum eLangTexts {
     iszTextShotsNotChronological,
     iszTextQuestionSwapShots,
     iszTextCheckUsn,
+    iszTextScanWarning,
+    iszTextUnscannedDirs,
     // ATTENTION: add new language strings before this line, the last line is used to determine the count
     cLangStrings
 };

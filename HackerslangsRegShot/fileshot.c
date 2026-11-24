@@ -232,7 +232,8 @@ VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
                 }
 
                 // Compare sub files if any
-                if ((NULL != lpFC1->lpFirstSubFC) || (NULL != lpFC2->lpFirstSubFC)) {
+                if (lpFC1->nScanError == 0 && lpFC2->nScanError == 0
+                    && ((NULL != lpFC1->lpFirstSubFC) || (NULL != lpFC2->lpFirstSubFC))) {
                     CompareFiles(lpFC1->lpFirstSubFC, lpFC2->lpFirstSubFC);
                 }
             }
@@ -346,6 +347,30 @@ VOID CompareHeadFiles(LPHEADFILE lpStartHF1, LPHEADFILE lpStartHF2)
 // ----------------------------------------------------------------------
 // Get file snap shot
 // ----------------------------------------------------------------------
+static BOOL DirectoryUnavailable(DWORD error)
+{
+    return error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION
+        || error == ERROR_PATH_NOT_FOUND || error == ERROR_FILENAME_EXCED_RANGE
+        || error == ERROR_CANT_ACCESS_FILE;
+}
+
+static VOID MarkDirectorySkipped(LPREGSHOT lpShot, LPFILECONTENT lpFC, DWORD error)
+{
+    LPTSTR path = GetWholeFileName(lpFC, 0);
+    TCHAR message[128];
+
+    lpFC->nScanError = error;
+    lpShot->cSkippedDirs++;
+    _sntprintf_s(message, _countof(message), _TRUNCATE,
+        TEXT("File snapshot: directory contents skipped (error %lu): "), error);
+    OutputDebugString(message);
+    if (path != NULL) {
+        OutputDebugString(path);
+        MYFREE(path);
+    }
+    OutputDebugString(TEXT("\n"));
+}
+
 // lpParentDir: enumerator of a parent on the same volume (non-reparse child), or NULL
 static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherFC, LPFILECONTENT* lplpCaller, const SNAPSHOT_DIR* lpParentDir)
 {
@@ -355,7 +380,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     BOOL fFound;
     ULONGLONG nFileId;
     DWORD nUsnVolume;
-    DWORD cFilesBefore, cDirsBefore;
+    DWORD cFilesBefore, cDirsBefore, cSkippedBefore;
 
     // Full dir/file name is already given
 
@@ -401,7 +426,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                 }
             }
 
-            hFile = FindFirstFile(lpszFullName, &FindData);
+            hFile = FindFirstFile(lpszFindFileName, &FindData);
             if (INVALID_HANDLE_VALUE != hFile) {
                 FindClose(hFile);
             }
@@ -419,7 +444,9 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
 
                 SecureZeroMemory(&FindData, sizeof(FindData));
 
-                hFile = CreateFile(lpszFullName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+                hFile = CreateFile(lpszFindFileName, FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
                 if (INVALID_HANDLE_VALUE != hFile) {
                     BY_HANDLE_FILE_INFORMATION FileInformation;
                     BOOL bResult;
@@ -538,7 +565,10 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     if (!fFound) {  // error: nothing in dir, no access, etc.
         DWORD error = GetLastError();
 
-        if (error != ERROR_NO_MORE_FILES && error != ERROR_FILE_NOT_FOUND) {
+        if (DirectoryUnavailable(error)) {
+            MarkDirectorySkipped(lpShot, lpFatherFC, error);
+        }
+        else if (error != ERROR_NO_MORE_FILES && error != ERROR_FILE_NOT_FOUND) {
             lpShot->fIncomplete = TRUE;
             OutputDebugString(TEXT("File snapshot: could not enumerate directory.\n"));
         }
@@ -555,6 +585,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     }
     cFilesBefore = lpShot->stCounts.cFiles;
     cDirsBefore = lpShot->stCounts.cDirs;
+    cSkippedBefore = lpShot->cSkippedDirs;
     // b) process entry then find next
     do {
         lpszFullName = NULL;
@@ -662,11 +693,15 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         // Pass this entry as father and "lpFirstSubFC" pointer for storing the first child's pointer
         if (ISDIR(lpFC->nFileAttributes)) {
             lpFC->nFileId = nFileId;
-            if (NULL == lpszFullName) {
-                lpszFullName = GetWholeFileName(lpFC, 4);  // +4 for "\*.*" search (in recursive call)
+            if (lpFC->nFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+                MarkDirectorySkipped(lpShot, lpFC, ERROR_CANT_ACCESS_FILE);
             }
-            GetFilesSnap(lpShot, lpszFullName, lpFC, &lpFC->lpFirstSubFC,
-                !(lpFC->nFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? &sDir : NULL);
+            else {
+                if (NULL == lpszFullName) {
+                    lpszFullName = GetWholeFileName(lpFC, 4);  // +4 for "\*.*" search
+                }
+                GetFilesSnap(lpShot, lpszFullName, lpFC, &lpFC->lpFirstSubFC, &sDir);
+            }
         }
 
         if (NULL != lpszFullName) {
@@ -691,6 +726,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
             lpFatherFC->lpFirstSubFC = NULL;
             lpShot->stCounts.cFiles = cFilesBefore;
             lpShot->stCounts.cDirs = cDirsBefore;
+            lpShot->cSkippedDirs = cSkippedBefore;
             if (path == NULL) {
                 lpShot->fIncomplete = TRUE;
                 OutputDebugString(TEXT("File snapshot: not enough memory to restart directory enumeration.\n"));
@@ -699,6 +735,14 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
             OutputDebugString(TEXT("File snapshot: ID enumeration failed; restarting directory with classic enumeration.\n"));
             GetFilesSnap(lpShot, path, lpFatherFC, &lpFatherFC->lpFirstSubFC, &classicParent);
             MYFREE(path);
+        }
+        else if (DirectoryUnavailable(error)) {
+            FreeAllFileContents(lpFatherFC->lpFirstSubFC);
+            lpFatherFC->lpFirstSubFC = NULL;
+            lpShot->stCounts.cFiles = cFilesBefore;
+            lpShot->stCounts.cDirs = cDirsBefore;
+            lpShot->cSkippedDirs = cSkippedBefore;
+            MarkDirectorySkipped(lpShot, lpFatherFC, error);
         }
         else if (error != ERROR_NO_MORE_FILES) {
             lpShot->fIncomplete = TRUE;
@@ -1002,6 +1046,7 @@ VOID SaveFiles(LPREGSHOT lpShot, LPFILECONTENT lpFC, DWORD nFPFatherFile, DWORD 
         sFC.nHashLow = (DWORD)lpFC->nChkSum;
         sFC.nHashHigh = (DWORD)(lpFC->nChkSum >> 32);
         sFC.fHashValid = !lpFC->nChkSumUnknown;
+        sFC.nScanError = lpFC->nScanError;
 
         // Set file positions of the relatives inside the tree
 #ifdef _UNICODE
@@ -1227,6 +1272,11 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
         lpFC->nFileSizeLow = sFC.nFileSizeLow;
         lpFC->nFileSizeHigh = sFC.nFileSizeHigh;
         lpFC->nFileAttributes = sFC.nFileAttributes;
+        if (fileheader.nFCVersion >= FILECONTENT_VERSION_4) {
+            lpFC->nScanError = sFC.nScanError;
+            if (lpFC->nScanError != 0)
+                lpShot->cSkippedDirs++;
+        }
         lpFC->nChkSumUnknown = TRUE;
         if (fileheader.nFCVersion >= FILECONTENT_VERSION_3
             && fileheader.nFCSize >= offsetof(SAVEFILECONTENT, fHashValid) + sizeof(sFC.fHashValid)

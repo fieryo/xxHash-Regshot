@@ -7,6 +7,7 @@ static BOOL failBulkRead;
 static int readCalls;
 static TCHAR hivePath[MAX_PATH];
 static int loadErrors;
+static BOOL failHiveWrite;
 
 static LPVOID WINAPI FakeHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
 {
@@ -25,6 +26,16 @@ static BOOL WINAPI FakeReadFile(HANDLE file, LPVOID data, DWORD size, LPDWORD re
         return FALSE;
     }
     return ReadFile(file, data, size, read, overlapped);
+}
+
+static BOOL WINAPI FakeWriteFile(HANDLE file, LPCVOID data, DWORD size, LPDWORD written, LPOVERLAPPED overlapped)
+{
+    if (failHiveWrite) {
+        *written = 0;
+        SetLastError(ERROR_DISK_FULL);
+        return FALSE;
+    }
+    return WriteFile(file, data, size, written, overlapped);
 }
 
 static BOOL WINAPI FakeOpenFileName(LPOPENFILENAME dialog)
@@ -63,8 +74,11 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 #define RegEnumValue FakeRegEnumValue
 #undef GetOpenFileName
 #define GetOpenFileName FakeOpenFileName
+#undef GetSaveFileName
+#define GetSaveFileName FakeOpenFileName
 #define HeapAlloc FakeHeapAlloc
 #define ReadFile FakeReadFile
+#define WriteFile FakeWriteFile
 #define ErrMsg FakeErrMsg
 #include "../HackerslangsRegShot/regshot.c"
 #include "../HackerslangsRegShot/usnsnapshot.c"
@@ -72,9 +86,24 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 
 static int enumerationMode;
 static int classicRestarts;
+static int directoryOpens;
 static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds,
     const SNAPSHOT_DIR* parent, ULONGLONG directoryId, WIN32_FIND_DATA* data, ULONGLONG* id)
 {
+    ++directoryOpens;
+    if (enumerationMode == 3 || enumerationMode == 5) {
+        SetLastError(enumerationMode == 3 ? ERROR_ACCESS_DENIED : ERROR_READ_FAULT);
+        return FALSE;
+    }
+    if (enumerationMode == 4) {
+        ZeroMemory(dir, sizeof(*dir));
+        dir->find = dir->directory = INVALID_HANDLE_VALUE;
+        ZeroMemory(data, sizeof(*data));
+        _tcscpy_s(data->cFileName, MAX_PATH, TEXT("loop"));
+        data->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
+        *id = 0;
+        return TRUE;
+    }
     if (enumerationMode == 1 && wantIds) {
         ZeroMemory(dir, sizeof(*dir));
         dir->find = dir->directory = INVALID_HANDLE_VALUE;
@@ -92,8 +121,12 @@ static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds
 
 static BOOL FakeSnapshotDirNext(SNAPSHOT_DIR* dir, WIN32_FIND_DATA* data, ULONGLONG* id)
 {
-    if ((enumerationMode == 1 && dir->ids) || enumerationMode == 2) {
-        SetLastError(ERROR_ACCESS_DENIED);
+    if (enumerationMode == 4) {
+        SetLastError(ERROR_NO_MORE_FILES);
+        return FALSE;
+    }
+    if ((enumerationMode == 1 && dir->ids) || enumerationMode == 2 || enumerationMode == 6) {
+        SetLastError(enumerationMode == 6 ? ERROR_ACCESS_DENIED : ERROR_READ_FAULT);
         return FALSE;
     }
     return SnapshotDirNext(dir, data, id);
@@ -202,6 +235,19 @@ static void TestHiveValidation(void)
     memcpy(data + fileOffset, &file, sizeof(file));
     memcpy(data + nameOffset, name, sizeof(name));
     assert(ValidateHive(data, nameOffset + sizeof(name), &header));
+    header.nFCVersion = FILECONTENT_VERSION_3;
+    header.nFCSize = offsetof(SAVEFILECONTENT, nScanError);
+    assert(ValidateHive(data, nameOffset + sizeof(name), &header));
+    header.nFCVersion = FILECONTENT_VERSION_CURRENT;
+    header.nFCSize = sizeof(file);
+    file.nScanError = ERROR_ACCESS_DENIED;
+    memcpy(data + fileOffset, &file, sizeof(file));
+    assert(!ValidateHive(data, sizeof(data), &header));
+    file.nFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    memcpy(data + fileOffset, &file, sizeof(file));
+    assert(ValidateHive(data, sizeof(data), &header));
+    file.nScanError = 0;
+    memcpy(data + fileOffset, &file, sizeof(file));
     assert(!ValidateHive(data, nameOffset + sizeof(name) - 1, &header));
     file.ofsBrotherFile = fileOffset;
     memcpy(data + fileOffset, &file, sizeof(file));
@@ -278,7 +324,7 @@ static void TestLoadFailures(void)
     value.nTypeCode = REG_BINARY;
     header.ofsHF = 320;
     head.ofsFirstFileContent = 328;
-    file.ofsFileName = 384;
+    file.ofsFileName = 400;
     file.nFileNameLen = _countof(name);
     memcpy(data, &header, sizeof(header));
     memcpy(data + header.ofsHKLM, &key, sizeof(key));
@@ -362,8 +408,100 @@ static void TestEnumerationRecovery(void)
     GetFilesSnap(&shot, path, NULL, &root, NULL);
     assert(shot.fIncomplete);
     FreeAllFileContents(root);
+    ZeroMemory(&shot, sizeof(shot));
+    root = NULL;
+    enumerationMode = 6;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    assert(!shot.fIncomplete && shot.cSkippedDirs == 1);
+    assert(root->nScanError == ERROR_ACCESS_DENIED && root->lpFirstSubFC == NULL);
+    assert(shot.stCounts.cFiles == 0 && shot.stCounts.cDirs == 1);
+    FreeAllFileContents(root);
+    ZeroMemory(&shot, sizeof(shot));
+    root = NULL;
+    enumerationMode = 3;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    assert(!shot.fIncomplete && shot.cSkippedDirs == 1);
+    assert(root->nScanError == ERROR_ACCESS_DENIED && root->lpFirstSubFC == NULL);
+    FreeAllFileContents(root);
+    ZeroMemory(&shot, sizeof(shot));
+    root = NULL;
+    enumerationMode = 4;
+    directoryOpens = 0;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    assert(!shot.fIncomplete && shot.cSkippedDirs == 1 && directoryOpens == 1);
+    assert(root->lpFirstSubFC->nScanError == ERROR_CANT_ACCESS_FILE);
+    assert(root->lpFirstSubFC->lpFirstSubFC == NULL);
+    FreeAllFileContents(root);
+    ZeroMemory(&shot, sizeof(shot));
+    root = NULL;
+    enumerationMode = 5;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    assert(shot.fIncomplete && shot.cSkippedDirs == 0);
+    FreeAllFileContents(root);
     enumerationMode = 0;
     assert(DeleteFile(first) && DeleteFile(second) && RemoveDirectory(path));
+}
+
+static void TestSkippedComparison(void)
+{
+    FILECONTENT before = { 0 }, after = { 0 }, child = { 0 };
+
+    before.lpszFileName = after.lpszFileName = TEXT("root");
+    before.nFileAttributes = after.nFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    child.lpszFileName = TEXT("file");
+    child.nFileAttributes = FILE_ATTRIBUTE_NORMAL;
+    before.lpFirstSubFC = &child;
+    after.nScanError = ERROR_ACCESS_DENIED;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcChanged.cFiles == 0 && CompareResult.stcChanged.cDirs == 0);
+    FreeCompareResult();
+    ClearFileMatchFlags(&before);
+    ClearFileMatchFlags(&after);
+    CompareFiles(&after, &before);
+    assert(CompareResult.stcChanged.cFiles == 0 && CompareResult.stcChanged.cDirs == 0);
+    FreeCompareResult();
+    ClearFileMatchFlags(&before);
+    ClearFileMatchFlags(&after);
+    after.nScanError = 0;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcDeleted.cFiles == 1);
+    FreeCompareResult();
+}
+
+static void TestSkippedSaveLoad(void)
+{
+    TCHAR temp[MAX_PATH], path[MAX_PATH];
+    REGSHOT shot = { 0 };
+
+    assert(GetTempPath(MAX_PATH, temp) != 0);
+    assert(GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    assert(GetTempFileName(temp, TEXT("rs"), 0, hivePath));
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    assert(shot.lpHF != NULL);
+    enumerationMode = 3;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    enumerationMode = 0;
+    shot.fFilled = TRUE;
+    shot.stCounts.cAll = shot.stCounts.cDirs;
+    SaveShot(&shot);
+    assert(!fHiveWriteFailed);
+    FreeShot(&shot);
+    assert(LoadShot(&shot));
+    assert(shot.fFilled && shot.fLoaded && shot.cSkippedDirs == 1);
+    assert(shot.lpHF->lpFirstFC->nScanError == ERROR_ACCESS_DENIED);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC == NULL);
+    {
+        int previousErrors = loadErrors;
+
+        failHiveWrite = TRUE;
+        SaveShot(&shot);
+        failHiveWrite = FALSE;
+        assert(fHiveWriteFailed && loadErrors == previousErrors + 1);
+        assert(shot.fFilled);
+    }
+    FreeShot(&shot);
+    assert(DeleteFile(hivePath) && RemoveDirectory(path));
 }
 
 static void TestBaselinePermissions(void)
@@ -414,7 +552,7 @@ static void TestBaselinePermissions(void)
 int main(void)
 {
     TCHAR message[REGSHOT_MESSAGE_LENGTH];
-    TCHAR dirs[EXTDIRLEN], openDir[MAX_PATH];
+    TCHAR dirs[EXTDIRLEN], openDir[MAX_PATH], saveDir[MAX_PATH];
     LPTSTR noSkips[] = { NULL };
 
     hHeap = GetProcessHeap();
@@ -422,6 +560,7 @@ int main(void)
     lpszMessage = message;
     lpszExtDir = dirs;
     lpszLastOpenDir = openDir;
+    lpszLastSaveDir = saveDir;
     lprgszRegSkipStrings = noSkips;
     lprgszFileSkipStrings = noSkips;
     SetTextsToDefaultLanguage();
@@ -438,6 +577,10 @@ int main(void)
     TestPathTrimming();
     puts("Testing enumeration recovery");
     TestEnumerationRecovery();
+    puts("Testing skipped-directory comparisons");
+    TestSkippedComparison();
+    puts("Testing skipped-directory save/load");
+    TestSkippedSaveLoad();
     puts("Testing baseline permissions");
     TestBaselinePermissions();
     puts("Snapshot logic tests passed");
