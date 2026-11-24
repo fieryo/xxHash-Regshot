@@ -14,4 +14,8 @@ xxHash is distributed under the BSD 2-Clause license; see
 `HackerslangsRegShot/third_party/xxhash/LICENSE`.
 
 Run `tests\run-checksum-test.cmd` from a Visual Studio Developer Command
-Prompt to test empty, binary, multi-buffer, and unreadable file hashing.
+Prompt to test empty, binary, multi-buffer, and unreadable file hashing,
+and directory enumeration fallback behavior.
+
+Directory scans request basic directory information and large-fetch
+enumeration when supported, falling back to compatible Windows APIs.

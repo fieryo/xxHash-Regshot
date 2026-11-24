@@ -45,6 +45,9 @@
     <ClInclude Include="work.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="fileenum.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="third_party\xxhash\xxhash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -87,6 +90,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="work.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fileenum.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
