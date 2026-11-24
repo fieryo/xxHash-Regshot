@@ -35,6 +35,9 @@ Run it elevated for the USN baseline permission tests.
 
 Directory scans request basic directory information and large-fetch
 enumeration when supported, falling back to compatible Windows APIs.
+The default scan path is `C:\`, not just `C:\Windows`. A saved `ExtDir`
+setting is preserved; change the **Scan dir** field to `C:\` if an existing
+`regshot.ini` still selects `C:\Windows`. Enable **Scan dir** to include files.
 An error partway through file-ID enumeration restarts that directory with
 classic enumeration. Protected, locked, disappeared, and overlong directory
 paths are retained with an unscanned-contents marker instead of discarding
