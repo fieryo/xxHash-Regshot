@@ -22,12 +22,6 @@
 #pragma once
 
 #include "common.h"
-#include "sha256.h"
-#include "sha512.h"
-
-LPTSTR ChecksumFromFile(LPTSTR filename, const LPTSTR alg);
-unsigned char* ReadFileContents(LPCTSTR filename, size_t* out_len);
-LPTSTR SHA256Checksum(LPTSTR content);
-LPTSTR SHA512Checksum(LPTSTR content);
+BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum);
 
 #endif

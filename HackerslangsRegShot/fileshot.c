@@ -37,22 +37,14 @@ SAVEHEADFILE sHF;
 
 WIN32_FIND_DATA FindData;
 
-COMPRESULTS CompareResult;
-LPBYTE lpFileBuffer;
-LPTSTR lpStringBuffer;
-size_t nSourceSize;
-
 //-------------------------------------------------------------
 // Get whole file name from FILECONTENT
 //-------------------------------------------------------------
 LPTSTR GetWholeFileName(LPFILECONTENT lpStartFC, size_t cchExtra)
 {
     LPFILECONTENT lpFC;
-    LPFILECONTENT lpCurrentFC;
-    LPFILECONTENT * lpFCs;
     LPTSTR lpszName;
     LPTSTR lpszTail;
-    LPTSTR lpszOrig;
     size_t cchName;
 
     cchName = 0;
@@ -67,45 +59,18 @@ LPTSTR GetWholeFileName(LPFILECONTENT lpStartFC, size_t cchExtra)
 
     lpszName = MYALLOC0((cchName + cchExtra) * sizeof(TCHAR));
 
-    lpszOrig = &lpszName[0];
-    lpszTail = &lpszName[0];
-
-    lpCurrentFC = lpStartFC;
-
-    while (NULL != lpCurrentFC->lpFatherFC) { 
-		lpCurrentFC->lpFatherFC->lpPrevFC = lpCurrentFC;
-		lpCurrentFC = lpCurrentFC->lpFatherFC;
-    }
-
-    TCHAR delim;
-
-    for (lpFC = lpCurrentFC; NULL != lpFC; lpFC = lpFC->lpPrevFC) {
+    lpszTail = &lpszName[cchName - 1];
+    for (lpFC = lpStartFC; NULL != lpFC; lpFC = lpFC->lpFatherFC) {
         if (NULL != lpFC->lpszFileName) {
             cchName = lpFC->cchFileName;
-			_tcsncpy_s(lpszName, cchName + 1, lpFC->lpszFileName, cchName);
-            if (NULL != lpFC->lpPrevFC) {
-                delim = (TCHAR)'\\';
+            lpszTail -= cchName;
+            memcpy(lpszTail, lpFC->lpszFileName, cchName * sizeof(TCHAR));
+            if (lpszTail > lpszName) {
+                *--lpszTail = (TCHAR)'\\';
             }
-            else {
-                delim = (TCHAR)'\0';
-            }
-            lpszName += cchName + 1;
-            lpszTail += cchName;
-            *lpszTail++ = delim;
         }
     }
-     
-    //for (lpFC = lpStartFC; NULL != lpFC; lpFC = lpFC->lpFatherFC) {
-    //    if (NULL != lpFC->lpszFileName) {
-    //        cchName = lpFC->cchFileName;
-    //        _tcsncpy_s(lpszTail -= cchName, cchName + 1, lpFC->lpszFileName, cchName);
-    //        if (lpszTail > lpszName) {
-    //            *--lpszTail = (TCHAR)'\\';
-    //        }
-    //    }
-    //}
-
-    return lpszOrig;
+    return lpszName;
 }
 
 //--------------------------------------------------
@@ -224,16 +189,14 @@ VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
                     && (lpFC1->nWriteDateTimeHigh == lpFC2->nWriteDateTimeHigh)
                     && (lpFC1->nFileSizeLow == lpFC2->nFileSizeLow)
                     && (lpFC1->nFileSizeHigh == lpFC2->nFileSizeHigh)
-                    && (lpFC1->nFileAttributes == lpFC2->nFileAttributes)) {
+                    && (lpFC1->nFileAttributes == lpFC2->nFileAttributes)
+                    && (lpFC1->nChkSumUnknown || lpFC2->nChkSumUnknown || lpFC1->nChkSum == lpFC2->nChkSum)) {
                     if (lpFC1->nChkSumUnknown && !lpFC2->nChkSumUnknown) {
                         lpFC2->fFileMatch = WASUNKNOWNBEFORE;
                     } else if (!lpFC1->nChkSumUnknown && lpFC2->nChkSumUnknown) {
                         lpFC2->fFileMatch = ISUNKNOWNAFTER;
                     }
-                    else if (!lpFC1->nChkSumUnknown && !lpFC2->nChkSumUnknown
-                        && 0 == _tcsicmp(lpFC1->nChkSum, lpFC2->nChkSum)) {
-                        lpFC2->fFileMatch = ISMATCH;
-                    } else {
+                    else {
                         lpFC2->fFileMatch = ISMATCH;
                     }
                 }
@@ -505,6 +468,15 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
             lpFatherFC->nFileSizeLow = FindData.nFileSizeLow;
             lpFatherFC->nFileSizeHigh = FindData.nFileSizeHigh;
             lpFatherFC->nFileAttributes = FindData.dwFileAttributes;
+            lpFatherFC->nChkSumUnknown = TRUE;
+            if (ISFILE(lpFatherFC->nFileAttributes)) {
+                lpFatherFC->nChkSumUnknown = !ChecksumFromFile(lpszFullName, &lpFatherFC->nChkSum);
+                if (lpFatherFC->nChkSumUnknown) {
+                    OutputDebugString(TEXT("Could not hash file: "));
+                    OutputDebugString(lpszFullName);
+                    OutputDebugString(TEXT("\n"));
+                }
+            }
 
             // Set "lpFirstSubFC" pointer for storing the first child's pointer
             lplpCaller = &lpFatherFC->lpFirstSubFC;
@@ -610,11 +582,15 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
         if (ISFILE(FindData.dwFileAttributes)) {
             LPTSTR lpszFullFileName = GetWholeFileName(lpFC, 0);
 
-            lpFC->nChkSum = ChecksumFromFile(lpszFullFileName, TEXT("sha256"));
-            lpFC->nChkSumUnknown = (0 != _tcscmp(lpFC->nChkSum, TEXT("")) ? FALSE : TRUE);
+            lpFC->nChkSumUnknown = !ChecksumFromFile(lpszFullFileName, &lpFC->nChkSum);
+            if (lpFC->nChkSumUnknown) {
+                OutputDebugString(TEXT("Could not hash file: "));
+                OutputDebugString(lpszFullFileName);
+                OutputDebugString(TEXT("\n"));
+            }
+            MYFREE(lpszFullFileName);
         }
         else {
-            lpFC->nChkSum = TEXT("");
             lpFC->nChkSumUnknown = TRUE;
         }
 
@@ -758,7 +734,10 @@ VOID SaveFiles(LPREGSHOT lpShot, LPFILECONTENT lpFC, DWORD nFPFatherFile, DWORD 
         sFC.nFileSizeLow = lpFC->nFileSizeLow;
         sFC.nFileSizeHigh = lpFC->nFileSizeHigh;
         sFC.nFileAttributes = lpFC->nFileAttributes;
-        sFC.nChkSum = lpFC->nChkSum;
+        sFC.nChkSum = 0;
+        sFC.nHashLow = (DWORD)lpFC->nChkSum;
+        sFC.nHashHigh = (DWORD)(lpFC->nChkSum >> 32);
+        sFC.fHashValid = !lpFC->nChkSumUnknown;
 
         // Set file positions of the relatives inside the tree
 #ifdef _UNICODE
@@ -875,6 +854,7 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
     // Read all files and their sub file contents
     for (; 0 != ofsFile; ofsFile = ofsBrotherFile) {
         // Copy SAVEFILECONTENT to aligned memory block
+        ZeroMemory(&sFC, sizeof(sFC));
         CopyMemory(&sFC, (lpFileBuffer + ofsFile), fileheader.nFCSize);
 
         // Save offset in local variable
@@ -964,7 +944,13 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
         lpFC->nFileSizeLow = sFC.nFileSizeLow;
         lpFC->nFileSizeHigh = sFC.nFileSizeHigh;
         lpFC->nFileAttributes = sFC.nFileAttributes;
-        lpFC->nChkSum = sFC.nChkSum;
+        lpFC->nChkSumUnknown = TRUE;
+        if (fileheader.nFCVersion >= FILECONTENT_VERSION_3
+            && fileheader.nFCSize >= offsetof(SAVEFILECONTENT, fHashValid) + sizeof(sFC.fHashValid)
+            && sFC.fHashValid == 1) {
+            lpFC->nChkSum = ((QWORD)sFC.nHashHigh << 32) | sFC.nHashLow;
+            lpFC->nChkSumUnknown = FALSE;
+        }
 
         // Update counters display
         nCurrentTime = GetTickCount();
