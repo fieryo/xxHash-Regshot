@@ -14,6 +14,7 @@ typedef struct {
     BYTE* buffer;
     DWORD offset;
     BOOL ids;
+    BOOL skipIds;
     DWORD volumeSerial;
     WCHAR volumeGuid[SNAPSHOT_VOLUME_GUID_CHARS];
 } SNAPSHOT_DIR;
@@ -32,5 +33,7 @@ BOOL SnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds,
     WIN32_FIND_DATA* data, ULONGLONG* fileId);
 BOOL SnapshotDirNext(SNAPSHOT_DIR* dir, WIN32_FIND_DATA* data, ULONGLONG* fileId);
 void SnapshotDirClose(SNAPSHOT_DIR* dir);
+BOOL SnapshotDirRestartClassic(SNAPSHOT_DIR* dir, LPCTSTR pattern,
+    WIN32_FIND_DATA* data, ULONGLONG* fileId);
 
 #endif
