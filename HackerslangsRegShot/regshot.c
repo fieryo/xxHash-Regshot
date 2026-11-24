@@ -1477,28 +1477,36 @@ VOID FreeShot(LPREGSHOT lpShot)
 // ----------------------------------------------------------------------
 // Get registry snap shot
 // ----------------------------------------------------------------------
-static LONG EnumerateSnapshotValue(HKEY key, DWORD index, DWORD* nameLength,
-    DWORD* type, DWORD* dataLength)
+static LONG EnumerateSnapshotValue(HKEY key, DWORD index, DWORD cbMaxValueData,
+    DWORD* nameLength, DWORD* type, DWORD* dataLength)
 {
     DWORD retry;
+    DWORD cbRequest = cbMaxValueData != 0 ? cbMaxValueData : 1;
     LONG error;
 
     for (retry = 0; ; ++retry) {
+        if (cbRequest > nDataBufferSize || lpDataBuffer == NULL) {
+            nDataBufferSize = AdjustBuffer((LPVOID*)&lpDataBuffer, nDataBufferSize,
+                cbRequest, REGSHOT_BUFFER_BLOCK_BYTES);
+            if (lpDataBuffer == NULL)
+                return ERROR_NOT_ENOUGH_MEMORY;
+        }
         *nameLength = (DWORD)(nStringBufferSize / sizeof(TCHAR));
-        *dataLength = (DWORD)nDataBufferSize;
+        // Advertise only this key's maximum, not the shared buffer that keeps the
+        // largest size seen during the scan: RegEnumValue's per-call cost grows
+        // with the advertised buffer size.
+        *dataLength = cbRequest;
         error = RegEnumValue(key, index, lpStringBuffer, nameLength, NULL,
             type, lpDataBuffer, dataLength);
         if (error != ERROR_MORE_DATA || retry == 8)
             return error;
-        if (nStringBufferSize > MAXDWORD / 2 || nDataBufferSize > MAXDWORD / 2)
+        if (nStringBufferSize > MAXDWORD / 2 || cbRequest > MAXDWORD / 2)
             return ERROR_NOT_ENOUGH_MEMORY;
         nStringBufferSize = AdjustBuffer((LPVOID*)&lpStringBuffer, nStringBufferSize,
             nStringBufferSize * 2, REGSHOT_BUFFER_BLOCK_BYTES);
-        nDataBufferSize = AdjustBuffer((LPVOID*)&lpDataBuffer, nDataBufferSize,
-            *dataLength > nDataBufferSize ? *dataLength : nDataBufferSize * 2,
-            REGSHOT_BUFFER_BLOCK_BYTES);
-        if (lpStringBuffer == NULL || lpDataBuffer == NULL)
+        if (lpStringBuffer == NULL)
             return ERROR_NOT_ENOUGH_MEMORY;
+        cbRequest = *dataLength > cbRequest ? *dataLength : cbRequest * 2;
     }
 }
 
@@ -1647,8 +1655,8 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
             // Get registry key values
             lplpVCPrev = &lpKC->lpFirstVC;
             for (i = 0; ; i++) {
-                nErrNo = EnumerateSnapshotValue(hRegKey, i, &cchValueName,
-                    &nValueType, &cbValueData);
+                nErrNo = EnumerateSnapshotValue(hRegKey, i, cbMaxValueData,
+                    &cchValueName, &nValueType, &cbValueData);
                 if (ERROR_NO_MORE_ITEMS == nErrNo) {
                     break;
                 }

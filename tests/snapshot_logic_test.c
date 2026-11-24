@@ -1,6 +1,7 @@
 #include "../HackerslangsRegShot/common.h"
 
 static int valueCalls;
+static DWORD firstValueDataSize;
 static BOOL keepGrowing;
 static int failAllocationAfter = -1;
 static BOOL failBulkRead;
@@ -70,7 +71,8 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
     if (!retryValue)
         return RegEnumValue(key, index, name, length, reserved, type, data, size);
     assert(index == 7);
-    ++valueCalls;
+    if (++valueCalls == 1)
+        firstValueDataSize = *size;
     if (valueCalls == 1 || keepGrowing) {
         *size = 4096;
         return ERROR_MORE_DATA;
@@ -254,13 +256,15 @@ static void TestValueRetry(void)
     retryValue = TRUE;
     nStringBufferSize = sizeof(TCHAR);
     lpStringBuffer = MYALLOC(nStringBufferSize);
-    nDataBufferSize = 1;
+    // A large buffer left over from an earlier key must not be advertised.
+    nDataBufferSize = 1024 * 1024;
     lpDataBuffer = MYALLOC(nDataBufferSize);
-    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength) == ERROR_SUCCESS);
+    assert(EnumerateSnapshotValue(NULL, 7, 16, &nameLength, &type, &dataLength) == ERROR_SUCCESS);
+    assert(firstValueDataSize == 16);
     assert(valueCalls == 2 && nameLength == 1 && dataLength == 1 && lpDataBuffer[0] == 0x42);
     valueCalls = 0;
     keepGrowing = TRUE;
-    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength) == ERROR_MORE_DATA);
+    assert(EnumerateSnapshotValue(NULL, 7, 0, &nameLength, &type, &dataLength) == ERROR_MORE_DATA);
     assert(valueCalls == 9);
     MYFREE(lpStringBuffer);
     MYFREE(lpDataBuffer);
