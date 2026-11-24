@@ -77,7 +77,7 @@ DWORD DoShotOnly(WorkerData* data) {
 	// check cancel after expensive call
 	if (data->hCancelEvent && WaitForSingleObject(data->hCancelEvent, 0) == WAIT_OBJECT_0)
 		return 1;
-	if (!fDontDisplayInfoAfterShot) {
+	if (lpParam->fFilled && !fDontDisplayInfoAfterShot) {
 		DisplayShotInfo(data->hWnd, lpMenuShot);
 	}
 	PostMessage(data->hWnd, WM_WORKER_FINISHED, (WPARAM)FUNC_SHOTONLY, (LPARAM)data);
@@ -101,12 +101,13 @@ DWORD DoShotSave(WorkerData* data) {
     if (data->hCancelEvent && WaitForSingleObject(data->hCancelEvent, 0) == WAIT_OBJECT_0)
         return 1;
 
-    if (!fDontDisplayInfoAfterShot) {
+    if (lpParam->fFilled && !fDontDisplayInfoAfterShot) {
         DisplayShotInfo(data->hWnd, lpMenuShot);
     }
 
     // save shot
-    SaveShot(lpParam);
+    if (lpParam->fFilled)
+        SaveShot(lpParam);
 
     PostMessage(data->hWnd, WM_WORKER_FINISHED, (WPARAM)FUNC_SHOTSAVE, (LPARAM)data);
 

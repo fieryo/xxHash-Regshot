@@ -185,7 +185,6 @@ static BOOL OpenIds(SNAPSHOT_DIR* dir, LPCTSTR pattern, const SNAPSHOT_DIR* pare
     }
     dir->ids = TRUE;
     dir->offset = 0;
-    *fallback = FALSE;
     if (!ReadIdEntry(dir, data, fileId)) {
         DWORD error = GetLastError();
 
@@ -193,6 +192,7 @@ static BOOL OpenIds(SNAPSHOT_DIR* dir, LPCTSTR pattern, const SNAPSHOT_DIR* pare
         SetLastError(error);
         return FALSE;
     }
+    *fallback = FALSE;
     return TRUE;
 }
 #endif
@@ -217,6 +217,7 @@ BOOL SnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds,
     (void)parentDir;
     (void)directoryId;
 #endif
+    dir->skipIds = wantIds || (parentDir != NULL && parentDir->skipIds);
     return OpenClassic(dir, pattern, data, fileId);
 }
 
@@ -241,4 +242,12 @@ void SnapshotDirClose(SNAPSHOT_DIR* dir)
     if (dir->find != INVALID_HANDLE_VALUE)
         FindClose(dir->find);
     dir->find = INVALID_HANDLE_VALUE;
+}
+
+BOOL SnapshotDirRestartClassic(SNAPSHOT_DIR* dir, LPCTSTR pattern,
+    WIN32_FIND_DATA* data, ULONGLONG* fileId)
+{
+    SnapshotDirClose(dir);
+    dir->skipIds = TRUE;
+    return OpenClassic(dir, pattern, data, fileId);
 }

@@ -24,6 +24,7 @@
 #include "checksum.h"
 #include "fileenum.h"
 #include "usnsnapshot.h"
+#include <stdint.h>
 
 // Workaround for older Platform/Windows SDKs (e.g. VS 6.0)
 #ifndef INVALID_FILE_ATTRIBUTES
@@ -52,6 +53,8 @@ LPTSTR GetWholeFileName(LPFILECONTENT lpStartFC, size_t cchExtra)
     cchName = 0;
     for (lpFC = lpStartFC; NULL != lpFC; lpFC = lpFC->lpFatherFC) {
         if (NULL != lpFC->lpszFileName) {
+            if (lpFC->cchFileName >= SIZE_MAX / sizeof(TCHAR) - cchName)
+                return NULL;
             cchName += lpFC->cchFileName + 1;  // +1 char for backslash or NULL char
         }
     }
@@ -59,7 +62,11 @@ LPTSTR GetWholeFileName(LPFILECONTENT lpStartFC, size_t cchExtra)
         cchName++;
     }
 
+    if (cchExtra > SIZE_MAX / sizeof(TCHAR) - cchName)
+        return NULL;
     lpszName = MYALLOC0((cchName + cchExtra) * sizeof(TCHAR));
+    if (lpszName == NULL)
+        return NULL;
 
     lpszTail = &lpszName[cchName - 1];
     for (lpFC = lpStartFC; NULL != lpFC; lpFC = lpFC->lpFatherFC) {
@@ -348,6 +355,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     BOOL fFound;
     ULONGLONG nFileId;
     DWORD nUsnVolume;
+    DWORD cFilesBefore, cDirsBefore;
 
     // Full dir/file name is already given
 
@@ -447,6 +455,13 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                     }
                     CloseHandle(hFile);
                 }
+                else {
+                    lpShot->fIncomplete = TRUE;
+                    OutputDebugString(TEXT("File snapshot: root path could not be read.\n"));
+                    FreeAllFileContents(lpFatherFC);
+                    MYFREE(lpszFindFileName);
+                    return;
+                }
             }
 
             // Remove previously added backslash (if any)
@@ -507,13 +522,26 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         }
 
         _tcscat_s(lpszFindFileName, _tcslen(lpszFindFileName) + 4 + 1, TEXT("\\*.*"));
-        fFound = SnapshotDirOpen(&sDir, lpszFindFileName, NULL != lpShot->lpUsnSnapshot, lpParentDir,
+        fFound = SnapshotDirOpen(&sDir, lpszFindFileName,
+            NULL != lpShot->lpUsnSnapshot && (lpParentDir == NULL || !lpParentDir->skipIds), lpParentDir,
             (NULL != lpFatherFC) ? lpFatherFC->nFileId : 0, &FindData, &nFileId);
+        nUsnVolume = 0;
+        if (fFound && sDir.ids) {
+            nUsnVolume = UsnSnapshotVolume(lpShot->lpUsnSnapshot, sDir.volumeGuid, sDir.volumeSerial);
+            if (nUsnVolume == 0)
+                fFound = SnapshotDirRestartClassic(&sDir, lpszFindFileName, &FindData, &nFileId);
+        }
         if (lpszFindFileName != lpszFullName) {
             MYFREE(lpszFindFileName);
         }
     }  // End of extra local block
     if (!fFound) {  // error: nothing in dir, no access, etc.
+        DWORD error = GetLastError();
+
+        if (error != ERROR_NO_MORE_FILES && error != ERROR_FILE_NOT_FOUND) {
+            lpShot->fIncomplete = TRUE;
+            OutputDebugString(TEXT("File snapshot: could not enumerate directory.\n"));
+        }
 #ifdef _DEBUG
         DWORD nError;
         LPTSTR lpszMessage;
@@ -525,10 +553,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
 #endif
         return;
     }
-    nUsnVolume = 0;
-    if (sDir.ids) {
-        nUsnVolume = UsnSnapshotVolume(lpShot->lpUsnSnapshot, sDir.volumeGuid, sDir.volumeSerial);
-    }
+    cFilesBefore = lpShot->stCounts.cFiles;
+    cDirsBefore = lpShot->stCounts.cDirs;
     // b) process entry then find next
     do {
         lpszFullName = NULL;
@@ -640,7 +666,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                 lpszFullName = GetWholeFileName(lpFC, 4);  // +4 for "\*.*" search (in recursive call)
             }
             GetFilesSnap(lpShot, lpszFullName, lpFC, &lpFC->lpFirstSubFC,
-                (sDir.ids && !(lpFC->nFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) ? &sDir : NULL);
+                !(lpFC->nFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? &sDir : NULL);
         }
 
         if (NULL != lpszFullName) {
@@ -650,7 +676,35 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         // Set "lpBrotherFC" pointer for storing the next brother's pointer
         lplpCaller = &lpFC->lpBrotherFC;
     } while (SnapshotDirNext(&sDir, &FindData, &nFileId));
-    SnapshotDirClose(&sDir);
+    {
+        DWORD error = GetLastError();
+        BOOL retry = sDir.ids && error != ERROR_NO_MORE_FILES;
+
+        SnapshotDirClose(&sDir);
+        if (retry) {
+            SNAPSHOT_DIR classicParent;
+            LPTSTR path = GetWholeFileName(lpFatherFC, 4);
+
+            ZeroMemory(&classicParent, sizeof(classicParent));
+            classicParent.skipIds = TRUE;
+            FreeAllFileContents(lpFatherFC->lpFirstSubFC);
+            lpFatherFC->lpFirstSubFC = NULL;
+            lpShot->stCounts.cFiles = cFilesBefore;
+            lpShot->stCounts.cDirs = cDirsBefore;
+            if (path == NULL) {
+                lpShot->fIncomplete = TRUE;
+                OutputDebugString(TEXT("File snapshot: not enough memory to restart directory enumeration.\n"));
+                return;
+            }
+            OutputDebugString(TEXT("File snapshot: ID enumeration failed; restarting directory with classic enumeration.\n"));
+            GetFilesSnap(lpShot, path, lpFatherFC, &lpFatherFC->lpFirstSubFC, &classicParent);
+            MYFREE(path);
+        }
+        else if (error != ERROR_NO_MORE_FILES) {
+            lpShot->fIncomplete = TRUE;
+            OutputDebugString(TEXT("File snapshot: directory enumeration stopped unexpectedly.\n"));
+        }
+    }
 }
 
 
@@ -810,6 +864,7 @@ VOID SaveUsnBaseline(LPREGSHOT lpShot, BOOL fHiveSaved)
         }
     }
     if (!fSaved) {
+        OutputDebugString(TEXT("USN: baseline unavailable or save failed; removing it and using full hashing next time.\n"));
         DeleteFile(lpszPath);  // never keep a baseline from an older save
     }
     MYFREE(lpszPath);
@@ -822,6 +877,15 @@ VOID SaveUsnBaseline(LPREGSHOT lpShot, BOOL fHiveSaved)
 // ----------------------------------------------------------------------
 // File Shot Engine
 // ----------------------------------------------------------------------
+static BOOL TrimSnapshotPath(LPTSTR path)
+{
+    size_t length = _tcslen(path);
+
+    while (length > 0 && (path[length - 1] == (TCHAR)'\\' || path[length - 1] == (TCHAR)' '))
+        path[--length] = 0;
+    return length != 0;
+}
+
 VOID FileShot(LPREGSHOT lpShot)
 {
 #ifdef _WINDOWS
@@ -855,24 +919,11 @@ VOID FileShot(LPREGSHOT lpShot)
             // Split each directory in string
             if (((TCHAR)';' == lpszExtDir[i]) || ((TCHAR)'\0' == lpszExtDir[i])) {
                 LPHEADFILE lpHF;
-                size_t j;
 
                 lpszExtDir[i] = (TCHAR)'\0';
-                j = i;
-
-                // remove all trailing spaces and backslashes
-                while (0 < j) {
-                    --j;
-                    if (((TCHAR)'\\' == lpszExtDir[j]) || ((TCHAR)' ' == lpszExtDir[j])) {
-                        lpszExtDir[j] = (TCHAR)'\0';
-                    }
-                    else {
-                        break;
-                    }
-                }
 
                 // if anything is left then process this directory
-                if ((0 < j) && ((TCHAR)'\0' != lpszExtDir[j])) {
+                if (TrimSnapshotPath(lpszSubExtDir)) {
                     lpHF = MYALLOC0(sizeof(HEADFILE));
 
                     *lplpHFPrev = lpHF;
@@ -1065,7 +1116,7 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
     DWORD ofsBrotherFile;
 
     // Read all files and their sub file contents
-    for (; 0 != ofsFile; ofsFile = ofsBrotherFile) {
+    for (; !lpShot->fIncomplete && 0 != ofsFile; ofsFile = ofsBrotherFile) {
         // Copy SAVEFILECONTENT to aligned memory block
         ZeroMemory(&sFC, sizeof(sFC));
         CopyMemory(&sFC, (lpFileBuffer + ofsFile), fileheader.nFCSize);
@@ -1076,6 +1127,10 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
         // Create new file content
         // put in a separate var for later use
         lpFC = MYALLOC0(sizeof(FILECONTENT));
+        if (lpFC == NULL) {
+            lpShot->fIncomplete = TRUE;
+            return;
+        }
 
         // Set father of current file
         lpFC->lpFatherFC = lpFatherFC;
@@ -1091,10 +1146,20 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
             // Copy string to an aligned memory block
             nSourceSize = sFC.nFileNameLen * fileheader.nCharSize;
             nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+            if (lpStringBuffer == NULL) {
+                lpShot->fIncomplete = TRUE;
+                FreeAllFileContents(lpFC);
+                return;
+            }
             ZeroMemory(lpStringBuffer, nStringBufferSize);
             CopyMemory(lpStringBuffer, (lpFileBuffer + sFC.ofsFileName), nSourceSize);
 
             lpFC->lpszFileName = MYALLOC0(sFC.nFileNameLen * sizeof(TCHAR));
+            if (lpFC->lpszFileName == NULL) {
+                lpShot->fIncomplete = TRUE;
+                FreeAllFileContents(lpFC);
+                return;
+            }
             if (fileextradata.bSameCharSize) {
                 _tcsncpy_s(lpFC->lpszFileName, sFC.nFileNameLen, lpStringBuffer, sFC.nFileNameLen);
             }
@@ -1130,6 +1195,11 @@ VOID LoadFiles(LPREGSHOT lpShot, DWORD ofsFile, LPFILECONTENT lpFatherFC, LPFILE
             }
 
             lpszFullName = GetWholeFileName(lpFC, 0);
+            if (lpszFullName == NULL) {
+                lpShot->fIncomplete = TRUE;
+                FreeAllFileContents(lpFC);
+                return;
+            }
             if (IsInSkipList(lpszFullName, lprgszFileSkipStrings)) {
                 MYFREE(lpszFullName);
                 FreeAllFileContents(lpFC);
@@ -1196,13 +1266,17 @@ VOID LoadHeadFiles(LPREGSHOT lpShot, DWORD ofsHeadFile, LPHEADFILE* lplpCaller)
     ZeroMemory(&sFC, sizeof(sFC));
 
     // Read all head files and their file contents
-    for (; 0 != ofsHeadFile; ofsHeadFile = sHF.ofsBrotherHeadFile) {
+    for (; !lpShot->fIncomplete && 0 != ofsHeadFile; ofsHeadFile = sHF.ofsBrotherHeadFile) {
         // Copy SAVEHEADFILE to aligned memory block
         CopyMemory(&sHF, (lpFileBuffer + ofsHeadFile), fileheader.nHFSize);
 
         // Create new head file
         // put in a separate var for later use
         lpHF = MYALLOC0(sizeof(HEADFILE));
+        if (lpHF == NULL) {
+            lpShot->fIncomplete = TRUE;
+            return;
+        }
 
         // Copy pointer to current head file into caller's pointer
         if (NULL != lplpCaller) {

@@ -225,6 +225,7 @@ struct _REGSHOT {
     COUNTS        stCounts;
     BOOL          fFilled;                  // Flag if Shot was done/loaded (even if result is empty)
     BOOL          fLoaded;                  // Flag if Shot was loaded from a file
+    BOOL          fIncomplete;              // Enumeration failed; the shot must not be compared/saved
     struct USN_SNAPSHOT* lpUsnSnapshot;     // USN volume checkpoints if taken in USN mode
 };
 typedef struct _REGSHOT REGSHOT, FAR* LPREGSHOT;

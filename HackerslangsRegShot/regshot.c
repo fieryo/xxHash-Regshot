@@ -20,6 +20,8 @@
 */
 
 #include "common.h"
+#include <stdint.h>
+#include <stdlib.h>
 #include "version.h"
 #include <LMCons.h>  // for UNLEN define
 
@@ -122,6 +124,9 @@ LPTSTR GetWholeKeyName(LPKEYCONTENT lpStartKC, BOOL fUseLongNames)
     cchName = 0;
     for (lpKC = lpStartKC; NULL != lpKC; lpKC = lpKC->lpFatherKC) {
         if (NULL != lpKC->lpszKeyName) {
+            if (lpKC->cchKeyName >= SIZE_MAX / sizeof(TCHAR) - cchName
+                || CCH_HKLM_LONG >= SIZE_MAX / sizeof(TCHAR) - cchName)
+                return NULL;
             if ((fUseLongNames) && (lpszHKLMShort == lpKC->lpszKeyName)) {
                 cchName += CCH_HKLM_LONG;
             }
@@ -139,6 +144,8 @@ LPTSTR GetWholeKeyName(LPKEYCONTENT lpStartKC, BOOL fUseLongNames)
     }
 
     lpszName = MYALLOC(cchName * sizeof(TCHAR));
+    if (lpszName == NULL)
+        return NULL;
 
     lpszTail = &lpszName[cchName - 1];
     lpszTail[0] = (TCHAR)'\0';
@@ -185,10 +192,15 @@ LPTSTR GetWholeValueName(LPVALUECONTENT lpVC, BOOL fUseLongNames)
     if (NULL != lpVC->lpszValueName) {
         cchValueName = lpVC->cchValueName;
     }
+    if (cchValueName >= SIZE_MAX / sizeof(TCHAR))
+        return NULL;
     cchName = cchValueName + 1;  // +1 char for NULL char
 
     for (lpKC = lpVC->lpFatherKC; NULL != lpKC; lpKC = lpKC->lpFatherKC) {
         if (NULL != lpKC->lpszKeyName) {
+            if (lpKC->cchKeyName >= SIZE_MAX / sizeof(TCHAR) - cchName
+                || CCH_HKLM_LONG >= SIZE_MAX / sizeof(TCHAR) - cchName)
+                return NULL;
             if ((fUseLongNames) && (lpszHKLMShort == lpKC->lpszKeyName)) {
                 cchName += CCH_HKLM_LONG;
             }
@@ -203,6 +215,8 @@ LPTSTR GetWholeValueName(LPVALUECONTENT lpVC, BOOL fUseLongNames)
     }
 
     lpszName = MYALLOC0(cchName * sizeof(TCHAR));
+    if (lpszName == NULL)
+        return NULL;
 
     lpszTail = &lpszName[cchName - 1];
     lpszTail[0] = (TCHAR)'\0';
@@ -267,11 +281,6 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
     else {
         DWORD cbData;
         DWORD ibCurrent;
-        size_t cchToGo;
-        size_t cchString;
-        size_t cchActual;
-        LPTSTR lpszSrc;
-        LPTSTR lpszDst;
 
         cbData = lpVC->cbData;
 
@@ -284,7 +293,7 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
             const TCHAR *src = (const TCHAR *)lpVC->lpValueData;
             size_t srcLen = 0;
             if (src != NULL) {
-                srcLen = _tcslen(src); /* count characters, not bytes */
+                srcLen = _tcsnlen(src, cbData / sizeof(TCHAR));
             }
 
             /* 3 = ": \"", 1 = closing '"', 1 = terminating NUL */
@@ -302,48 +311,50 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
             break;
         }
 
-        case REG_MULTI_SZ: 
+        case REG_MULTI_SZ:
             // multi string value that can be displayed as strings
             // format  ": \"<string>\", \"<string>\", \"<string>\", ...\0"
             // see http://msdn.microsoft.com/en-us/library/windows/desktop/ms724884.aspx
-            nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, 10 + (2 * cbData), REGSHOT_BUFFER_BLOCK_BYTES);
-            ZeroMemory(lpStringBuffer, nStringBufferSize);
-            lpszDst = lpStringBuffer;
-            _tcscpy_s(lpszDst, 10 + (2 * (cbData / sizeof(TCHAR))), TEXT(": \""));
-            lpszDst += 3;
-            cchActual = 0;
-            if (NULL != lpVC->lpValueData) {
-                lpszSrc = (LPTSTR)lpVC->lpValueData;
-                cchToGo = cbData / sizeof(TCHAR);  // convert byte count to char count
-                while ((cchToGo > 0) && (*lpszSrc)) {
-                    rsize_t rsize = 0;
-                    if (0 != cchActual) {
-                        rsize += 10 + (2 * cchToGo) - 3;
-                        _tcscpy_s(lpszDst, rsize + 1, TEXT("\", \""));
-                        lpszDst += 4;
-                        cchActual += 4;
-                        rsize -= 4;
-                    }
-                    cchString = _tcsnlen(lpszSrc, cchToGo);
-                    _tcsncpy_s(lpszDst, cchToGo + 1, lpszSrc, cchString);
-                    lpszDst += cchString;
-                    cchActual += cchString;
+        {
+            const TCHAR* src = (const TCHAR*)lpVC->lpValueData;
+            size_t limit = cbData / sizeof(TCHAR);
+            size_t offset, length, total = 5;
+            BOOL first = TRUE;
+            LPTSTR dst;
 
-                    cchToGo -= cchString;
-                    if (cchToGo == 0) {
-                        break;
-                    }
-
-                    // account for null char
-                    lpszSrc += cchString + 1;
-                    cchToGo -= 1;
-                }
+            for (offset = 0; offset < limit && src[offset] != 0;) {
+                length = _tcsnlen(src + offset, limit - offset);
+                if (length > (SIZE_MAX / sizeof(TCHAR)) - total - 4)
+                    return NULL;
+                total += length + (first ? 0 : 4);
+                first = FALSE;
+                offset += length;
+                if (offset < limit)
+                    ++offset;
             }
-            _tcscpy_s(lpszDst, 10 + (2 * cchToGo) + 1, TEXT("\""));
-            cchActual += 3 + 1 + 1;  // account for null char
-            lpszValueData = MYALLOC((cchActual  + 1) * sizeof(TCHAR));
-            _tcscpy_s(lpszValueData, cchActual + 1, lpStringBuffer);
+            lpszValueData = MYALLOC(total * sizeof(TCHAR));
+            if (lpszValueData == NULL)
+                return NULL;
+            memcpy(lpszValueData, TEXT(": \""), 3 * sizeof(TCHAR));
+            dst = lpszValueData + 3;
+            first = TRUE;
+            for (offset = 0; offset < limit && src[offset] != 0;) {
+                length = _tcsnlen(src + offset, limit - offset);
+                if (!first) {
+                    memcpy(dst, TEXT("\", \""), 4 * sizeof(TCHAR));
+                    dst += 4;
+                }
+                memcpy(dst, src + offset, length * sizeof(TCHAR));
+                dst += length;
+                first = FALSE;
+                offset += length;
+                if (offset < limit)
+                    ++offset;
+            }
+            *dst++ = (TCHAR)'"';
+            *dst = 0;
             break;
+        }
 
 #if 1 == __LITTLE_ENDIAN__
         case REG_DWORD_BIG_ENDIAN:
@@ -411,11 +422,14 @@ LPTSTR TransData(LPVALUECONTENT lpVC, DWORD nConversionType, BOOL fForOutput)
             if ((fForOutput) && (0 < cbOutBinaryMax) && (cbData > cbOutBinaryMax)) {
                 cbData = cbOutBinaryMax;
             }
-            size_t cchValueData = 1 + ((cbData / sizeof(TCHAR)) * 3) + 4 + 1;
+            if ((size_t)cbData > (SIZE_MAX / sizeof(TCHAR) - 6) / 3)
+                return NULL;
+            size_t cchValueData = 1 + ((size_t)cbData * 3) + 4 + 1;
             lpszValueData = MYALLOC0(cchValueData * sizeof(TCHAR));
+            if (lpszValueData == NULL)
+                return NULL;
             _tcscpy_s(lpszValueData, cchValueData, TEXT(":"));
-			size_t cchDataMax = cbData / sizeof(TCHAR);
-            for (ibCurrent = 0; ibCurrent < cchDataMax; ibCurrent++) {
+            for (ibCurrent = 0; ibCurrent < cbData; ibCurrent++) {
                 _sntprintf_s(lpszValueData + (1 + (ibCurrent * 3)), cchValueData - (1 + (ibCurrent * 3)), 4, TEXT(" %02X\0"), *(lpVC->lpValueData + ibCurrent));
             }
             if (cbData != lpVC->cbData) {
@@ -1040,12 +1054,10 @@ BOOL OutputComparisonResult(VOID)
 
     cchString = _tcslen(lpszOutputPath);
 
-    if ((0 < cchString) && ((TCHAR)'\\' != *(lpszOutputPath + cchString - 1))) {
-        *(lpszOutputPath + cchString) = (TCHAR)'\\';
-        *(lpszOutputPath + cchString + 1) = (TCHAR)'\0';  // bug found by "itschy" <itschy@lycos.de> 1.61d->1.61e
-        cchString++;
-    }
     _tcscpy_s(lpszDestFileName, EXTDIRLEN, lpszOutputPath);
+    if ((0 < cchString) && ((TCHAR)'\\' != lpszOutputPath[cchString - 1])) {
+        _tcscat_s(lpszDestFileName, EXTDIRLEN, TEXT("\\"));
+    }
 
     if (ReplaceInvalidFileNameChars(lpszBuffer)) {
         _tcscat_s(lpszDestFileName, EXTDIRLEN, lpszBuffer);
@@ -1089,8 +1101,8 @@ BOOL OutputComparisonResult(VOID)
         WriteHTMLBegin();
     }
     else {
-        WriteFile(hFile, lpszProgramName, (DWORD)(_tcslen(lpszProgramName)), &NBW, NULL);
-        WriteFile(hFile, lpszCRLF, (DWORD)(_tcslen(lpszCRLF)), &NBW, NULL);
+        WriteFile(hFile, lpszProgramName, (DWORD)(_tcslen(lpszProgramName) * sizeof(TCHAR)), &NBW, NULL);
+        WriteFile(hFile, lpszCRLF, (DWORD)(_tcslen(lpszCRLF) * sizeof(TCHAR)), &NBW, NULL);
     }
 
     //_asm int 3;
@@ -1342,6 +1354,31 @@ VOID FreeShot(LPREGSHOT lpShot)
 // ----------------------------------------------------------------------
 // Get registry snap shot
 // ----------------------------------------------------------------------
+static LONG EnumerateSnapshotValue(HKEY key, DWORD index, DWORD* nameLength,
+    DWORD* type, DWORD* dataLength)
+{
+    DWORD retry;
+    LONG error;
+
+    for (retry = 0; ; ++retry) {
+        *nameLength = (DWORD)(nStringBufferSize / sizeof(TCHAR));
+        *dataLength = (DWORD)nDataBufferSize;
+        error = RegEnumValue(key, index, lpStringBuffer, nameLength, NULL,
+            type, lpDataBuffer, dataLength);
+        if (error != ERROR_MORE_DATA || retry == 8)
+            return error;
+        if (nStringBufferSize > MAXDWORD / 2 || nDataBufferSize > MAXDWORD / 2)
+            return ERROR_NOT_ENOUGH_MEMORY;
+        nStringBufferSize = AdjustBuffer((LPVOID*)&lpStringBuffer, nStringBufferSize,
+            nStringBufferSize * 2, REGSHOT_BUFFER_BLOCK_BYTES);
+        nDataBufferSize = AdjustBuffer((LPVOID*)&lpDataBuffer, nDataBufferSize,
+            *dataLength > nDataBufferSize ? *dataLength : nDataBufferSize * 2,
+            REGSHOT_BUFFER_BLOCK_BYTES);
+        if (lpStringBuffer == NULL || lpDataBuffer == NULL)
+            return ERROR_NOT_ENOUGH_MEMORY;
+    }
+}
+
 LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyName, LPKEYCONTENT lpFatherKC, LPKEYCONTENT* lplpCaller)
 {
     LPKEYCONTENT lpKC;
@@ -1400,7 +1437,7 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
             NULL
         );
         if (ERROR_SUCCESS != nErrNo) {
-            // TODO: process/protocol issue in some way, do not silently ignore it (at least in Debug builds)
+            OutputDebugString(TEXT("Registry snapshot: key information could not be read.\n"));
             FreeAllKeyContents(lpKC);
             return NULL;
         }
@@ -1426,38 +1463,34 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
 #endif
 
             // Account for NULL char
-            if (0 < cchMaxValueName) {
-                cchMaxValueName++;
-            }
+            cchMaxValueName++;
 
             // Get buffer for maximum value name length
             nSourceSize = cchMaxValueName * sizeof(TCHAR);
             nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
 
             // Get buffer for maximum value data length
-            nSourceSize = cbMaxValueData;
+            nSourceSize = cbMaxValueData != 0 ? cbMaxValueData : 1;
             nDataBufferSize = AdjustBuffer(&lpDataBuffer, nDataBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+            if (lpStringBuffer == NULL || lpDataBuffer == NULL) {
+                lpShot->fIncomplete = TRUE;
+                OutputDebugString(TEXT("Registry snapshot: value buffers could not be allocated.\n"));
+                return lpKC;
+            }
 
             // Get registry key values
             lplpVCPrev = &lpKC->lpFirstVC;
             for (i = 0; ; i++) {
-                // Enumerate value
-                /* nStringBufferSize is maintained in bytes by AdjustBuffer; RegEnumValue
-                   expects the size in TCHARs, so convert bytes -> TCHAR count. */
-                cchValueName = (DWORD)(nStringBufferSize / sizeof(TCHAR));
-                cbValueData = (DWORD)nDataBufferSize;   
-                nErrNo = RegEnumValue(hRegKey, i,
-                    lpStringBuffer,
-                    &cchValueName,   // in TCHARs; in *including* and out *excluding* NULL char
-                    NULL,
-                    &nValueType,
-                    lpDataBuffer,
-                    &cbValueData);
+                nErrNo = EnumerateSnapshotValue(hRegKey, i, &cchValueName,
+                    &nValueType, &cbValueData);
                 if (ERROR_NO_MORE_ITEMS == nErrNo) {
                     break;
                 }
                 if (ERROR_SUCCESS != nErrNo) {
-                    // TODO: process/protocol issue in some way, do not silently ignore it (at least in Debug builds)
+                    lpShot->fIncomplete = TRUE;
+                    OutputDebugString(TEXT("Registry snapshot: value enumeration failed.\n"));
+                    if (ERROR_NOT_ENOUGH_MEMORY == nErrNo)
+                        break;
                     continue;
                 }
                 lpStringBuffer[cchValueName] = (TCHAR)'\0';  // safety NULL char
@@ -1583,7 +1616,7 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
                     break;
                 }
                 if (ERROR_SUCCESS != nErrNo) {
-                    // TODO: process/protocol issue in some way, do not silently ignore it (at least in Debug builds)
+                    OutputDebugString(TEXT("Registry snapshot: subkey enumeration failed.\n"));
                     continue;
                 }
                 lpStringBuffer[cchSubKeyName] = (TCHAR)'\0';  // safety NULL char
@@ -1613,8 +1646,7 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
 
             nErrNo = RegOpenKeyEx(hRegKey, lpszRegSubKeyName, 0, KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS, &hRegSubKey);
             if (ERROR_SUCCESS != nErrNo) {
-                // TODO: process/protocol issue in some way, do not silently ignore it (at least in Debug builds)
-                //       e.g. when ERROR_ACCESS_DENIED then at least add key itself to the list
+                OutputDebugString(TEXT("Registry snapshot: subkey could not be opened.\n"));
                 MYFREE(lpszRegSubKeyName);
                 continue;
             }
@@ -1729,12 +1761,20 @@ VOID Shot(LPREGSHOT lpShot)
     );
 #endif
 
+    if (lpShot->fIncomplete) {
+        FreeShot(lpShot);
+        ErrMsg(TEXT("Snapshot was incomplete and has been discarded. Check access permissions and retry."));
+        UI_ShowHideCounters(SW_HIDE);
+        goto cleanupShotBuffers;
+    }
+
     // Set flags
     lpShot->fFilled = TRUE;
     lpShot->fLoaded = FALSE;
 
     UI_ShowHideCounters(SW_HIDE);
 
+cleanupShotBuffers:
     if (NULL != lpStringBuffer) {
         MYFREE(lpStringBuffer);
         lpStringBuffer = NULL;
@@ -2314,8 +2354,9 @@ VOID SaveShot(LPREGSHOT lpShot)
         DWORD ofsBrotherKey;
 
         // Read all reg keys and their value and sub key contents
-        for (; 0 != ofsKey; ofsKey = ofsBrotherKey) {
+        for (; !lpShot->fIncomplete && 0 != ofsKey; ofsKey = ofsBrotherKey) {
             // Copy SAVEKEYCONTENT to aligned memory block
+            ZeroMemory(&sKC, sizeof(sKC));
             CopyMemory(&sKC, (lpFileBuffer + ofsKey), fileheader.nKCSize);
 
             // Save offsets in local variables due to recursive calls
@@ -2324,6 +2365,10 @@ VOID SaveShot(LPREGSHOT lpShot)
             // Create new key content
             // put in a separate var for later use
             lpKC = MYALLOC0(sizeof(KEYCONTENT));
+            if (lpKC == NULL) {
+                lpShot->fIncomplete = TRUE;
+                return;
+            }
 
             // Set father of current key
             lpKC->lpFatherKC = lpFatherKC;
@@ -2339,10 +2384,20 @@ VOID SaveShot(LPREGSHOT lpShot)
                 // Copy string to an aligned memory block
                 nSourceSize = sKC.nKeyNameLen * fileheader.nCharSize;
                 nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+                if (lpStringBuffer == NULL) {
+                    lpShot->fIncomplete = TRUE;
+                    FreeAllKeyContents(lpKC);
+                    return;
+                }
                 ZeroMemory(lpStringBuffer, nStringBufferSize);
                 CopyMemory(lpStringBuffer, (lpFileBuffer + sKC.ofsKeyName), nSourceSize);
 
                 lpKC->lpszKeyName = MYALLOC0((sKC.nKeyNameLen+1)  * sizeof(TCHAR));
+                if (lpKC->lpszKeyName == NULL) {
+                    lpShot->fIncomplete = TRUE;
+                    FreeAllKeyContents(lpKC);
+                    return;
+                }
                 if (fileextradata.bSameCharSize) {
                     _tcsncpy_s(lpKC->lpszKeyName, sKC.nKeyNameLen + 1, lpStringBuffer, sKC.nKeyNameLen);
                 }
@@ -2385,6 +2440,11 @@ VOID SaveShot(LPREGSHOT lpShot)
                 }
 
                 lpszFullName = GetWholeKeyName(lpKC, FALSE);
+                if (lpszFullName == NULL) {
+                    lpShot->fIncomplete = TRUE;
+                    FreeAllKeyContents(lpKC);
+                    return;
+                }
                 if (IsInSkipList(lpszFullName, lprgszRegSkipStrings)) {
                     MYFREE(lpszFullName);
                     FreeAllKeyContents(lpKC);
@@ -2412,10 +2472,15 @@ VOID SaveShot(LPREGSHOT lpShot)
                 lplpCallerVC = &lpKC->lpFirstVC;
                 for (ofsValue = sKC.ofsFirstValue; 0 != ofsValue; ofsValue = sVC.ofsBrotherValue) {
                     // Copy SAVEVALUECONTENT to aligned memory block
+                    ZeroMemory(&sVC, sizeof(sVC));
                     CopyMemory(&sVC, (lpFileBuffer + ofsValue), fileheader.nVCSize);
 
                     // Create new value content
                     lpVC = MYALLOC0(sizeof(VALUECONTENT));
+                    if (lpVC == NULL) {
+                        lpShot->fIncomplete = TRUE;
+                        return;
+                    }
 
                     // Set father key of current value to current key
                     lpVC->lpFatherKC = lpKC;
@@ -2431,10 +2496,20 @@ VOID SaveShot(LPREGSHOT lpShot)
                         // Copy string to an aligned memory block
                         nSourceSize = sVC.nValueNameLen * fileheader.nCharSize;
                         nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+                        if (lpStringBuffer == NULL) {
+                            lpShot->fIncomplete = TRUE;
+                            FreeAllValueContents(lpVC);
+                            return;
+                        }
                         ZeroMemory(lpStringBuffer, nStringBufferSize);
                         CopyMemory(lpStringBuffer, (lpFileBuffer + sVC.ofsValueName), nSourceSize);
 
                         lpVC->lpszValueName = MYALLOC((sVC.nValueNameLen + 1) * sizeof(TCHAR));
+                        if (lpVC->lpszValueName == NULL) {
+                            lpShot->fIncomplete = TRUE;
+                            FreeAllValueContents(lpVC);
+                            return;
+                        }
                         if (fileextradata.bSameCharSize) {
                             _tcsncpy_s(lpVC->lpszValueName, sVC.nValueNameLen + 1, lpStringBuffer, sVC.nValueNameLen);
                         }
@@ -2459,6 +2534,11 @@ VOID SaveShot(LPREGSHOT lpShot)
                         }
 
                         lpszFullName = GetWholeValueName(lpVC, FALSE);
+                        if (lpszFullName == NULL) {
+                            lpShot->fIncomplete = TRUE;
+                            FreeAllValueContents(lpVC);
+                            return;
+                        }
                         if (IsInSkipList(lpszFullName, lprgszRegSkipStrings)) {
                             MYFREE(lpszFullName);
                             FreeAllValueContents(lpVC);
@@ -2482,6 +2562,10 @@ VOID SaveShot(LPREGSHOT lpShot)
                     // Copy value data
                     if (0 < sVC.cbData) {  // otherwise leave it NULL
                         lpVC->lpValueData = MYALLOC(sVC.cbData);
+                        if (lpVC->lpValueData == NULL) {
+                            lpShot->fIncomplete = TRUE;
+                            return;
+                        }
                         CopyMemory(lpVC->lpValueData, (lpFileBuffer + sVC.ofsValueData), sVC.cbData);
                     }
 
@@ -2509,6 +2593,160 @@ VOID SaveShot(LPREGSHOT lpShot)
     }
 
 
+    typedef struct {
+        const BYTE* data;
+        DWORD size;
+        const FILEHEADER* header;
+        BYTE* visited;
+    } HIVE_VALIDATION;
+
+    static BOOL HiveRange(const HIVE_VALIDATION* hive, DWORD offset, ULONGLONG size)
+    {
+        DWORD headerSize = hive->header->nFHSize != 0
+            ? hive->header->nFHSize : (DWORD)offsetof(FILEHEADER, nFHVersion);
+
+        return offset >= headerSize && offset <= hive->size && size <= hive->size - offset;
+    }
+
+    static BOOL HiveNode(HIVE_VALIDATION* hive, DWORD offset, DWORD size)
+    {
+        BYTE bit = (BYTE)(1 << (offset & 7));
+
+        if (!HiveRange(hive, offset, size) || (hive->visited[offset >> 3] & bit))
+            return FALSE;
+        hive->visited[offset >> 3] |= bit;
+        return TRUE;
+    }
+
+    static BOOL HiveString(const HIVE_VALIDATION* hive, DWORD offset, DWORD count,
+        BOOL old, BOOL required)
+    {
+        DWORD width = hive->header->nCharSize;
+        WCHAR last = 0;
+
+        if (old) {
+            const BYTE* end;
+
+            if (!HiveRange(hive, offset, 1))
+                return !required && offset == 0;
+            end = memchr(hive->data + offset, 0, hive->size - offset);
+            return end != NULL && (!required || end != hive->data + offset);
+        }
+        if (count == 0) {
+            if (required)
+                return FALSE;
+            if (offset == 0)
+                return TRUE;
+            if (!HiveRange(hive, offset, width))
+                return FALSE;
+            memcpy(&last, hive->data + offset, width);
+            return last == 0;
+        }
+        if (!HiveRange(hive, offset, (ULONGLONG)count * width))
+            return FALSE;
+        memcpy(&last, hive->data + offset + ((size_t)count - 1) * width, width);
+        return last == 0 && (!required || count > 1);
+    }
+
+    static BOOL ValidateHiveKeys(HIVE_VALIDATION* hive, DWORD offset, unsigned depth)
+    {
+        if (depth > 512)
+            return FALSE;
+        while (offset != 0) {
+            SAVEKEYCONTENT key = { 0 };
+            DWORD valueOffset;
+
+            if (!HiveNode(hive, offset, hive->header->nKCSize))
+                return FALSE;
+            memcpy(&key, hive->data + offset, hive->header->nKCSize);
+            if (!HiveString(hive, key.ofsKeyName, key.nKeyNameLen,
+                    hive->header->nKCVersion < KEYCONTENT_VERSION_2, TRUE))
+                return FALSE;
+            for (valueOffset = key.ofsFirstValue; valueOffset != 0;) {
+                SAVEVALUECONTENT value = { 0 };
+
+                if (!HiveNode(hive, valueOffset, hive->header->nVCSize))
+                    return FALSE;
+                memcpy(&value, hive->data + valueOffset, hive->header->nVCSize);
+                if (!HiveString(hive, value.ofsValueName, value.nValueNameLen,
+                        hive->header->nVCVersion < VALUECONTENT_VERSION_2, FALSE)
+                    || (value.cbData != 0 && !HiveRange(hive, value.ofsValueData, value.cbData)))
+                    return FALSE;
+                valueOffset = value.ofsBrotherValue;
+            }
+            if (!ValidateHiveKeys(hive, key.ofsFirstSubKey, depth + 1))
+                return FALSE;
+            offset = key.ofsBrotherKey;
+        }
+        return TRUE;
+    }
+
+    static BOOL ValidateHiveFiles(HIVE_VALIDATION* hive, DWORD offset, unsigned depth)
+    {
+        if (depth > 512)
+            return FALSE;
+        while (offset != 0) {
+            SAVEFILECONTENT file = { 0 };
+
+            if (!HiveNode(hive, offset, hive->header->nFCSize))
+                return FALSE;
+            memcpy(&file, hive->data + offset, hive->header->nFCSize);
+            if (!HiveString(hive, file.ofsFileName, file.nFileNameLen,
+                    hive->header->nFCVersion < FILECONTENT_VERSION_2, TRUE)
+                || !ValidateHiveFiles(hive, file.ofsFirstSubFile, depth + 1))
+                return FALSE;
+            offset = file.ofsBrotherFile;
+        }
+        return TRUE;
+    }
+
+    // Validate every reachable range and reject cycles before recursive loaders run.
+    static BOOL ValidateHive(const BYTE* data, DWORD size, const FILEHEADER* header)
+    {
+        HIVE_VALIDATION hive;
+        DWORD offset;
+        BOOL valid;
+
+        if (header->nFHVersion < FILEHEADER_VERSION_1 || header->nFHVersion > FILEHEADER_VERSION_CURRENT
+            || (header->nFHSize != 0 && (header->nFHSize > size
+                || header->nFHSize < (header->nFHVersion >= FILEHEADER_VERSION_2
+                    ? sizeof(FILEHEADER) : offsetof(FILEHEADER, nFHVersion))))
+            || (header->nCharSize != 1 && header->nCharSize != 2)
+            || header->nKCVersion < 1 || header->nKCVersion > KEYCONTENT_VERSION_CURRENT
+            || header->nVCVersion < 1 || header->nVCVersion > VALUECONTENT_VERSION_CURRENT
+            || header->nHFVersion != HEADFILE_VERSION_CURRENT
+            || header->nFCVersion < 1 || header->nFCVersion > FILECONTENT_VERSION_CURRENT
+            || header->nKCSize != (header->nKCVersion < 2 ? offsetof(SAVEKEYCONTENT, nKeyNameLen) : sizeof(SAVEKEYCONTENT))
+            || header->nVCSize != (header->nVCVersion < 2 ? offsetof(SAVEVALUECONTENT, nValueNameLen) : sizeof(SAVEVALUECONTENT))
+            || header->nHFSize != sizeof(SAVEHEADFILE)
+            || header->nFCSize != (header->nFCVersion < 2 ? offsetof(SAVEFILECONTENT, nFileNameLen)
+                : header->nFCVersion < 3 ? offsetof(SAVEFILECONTENT, nHashLow) : sizeof(SAVEFILECONTENT)))
+            return FALSE;
+        hive.data = data;
+        hive.size = size;
+        hive.header = header;
+        hive.visited = calloc((size_t)size / 8 + 1, 1);
+        if (hive.visited == NULL)
+            return FALSE;
+        valid = (header->nFHVersion < FILEHEADER_VERSION_2
+                || (HiveString(&hive, header->ofsComputerName, header->nComputerNameLen, FALSE, FALSE)
+                    && HiveString(&hive, header->ofsUserName, header->nUserNameLen, FALSE, FALSE)))
+            && ValidateHiveKeys(&hive, header->ofsHKLM, 0)
+            && ValidateHiveKeys(&hive, header->ofsHKU, 0);
+        for (offset = header->ofsHF; valid && offset != 0;) {
+            SAVEHEADFILE head;
+
+            valid = HiveNode(&hive, offset, header->nHFSize);
+            if (!valid)
+                break;
+            memcpy(&head, data + offset, sizeof(head));
+            valid = ValidateHiveFiles(&hive, head.ofsFirstFileContent, 0);
+            offset = head.ofsBrotherHeadFile;
+        }
+        free(hive.visited);
+        return valid;
+    }
+
     // ----------------------------------------------------------------------
     // Load registry and files from HIVE file
     // ----------------------------------------------------------------------
@@ -2521,6 +2759,9 @@ VOID SaveShot(LPREGSHOT lpShot)
         DWORD cbFileRemain;
         DWORD cbReadSize;
         DWORD cbFileRead;
+        LARGE_INTEGER fileSize;
+        REGSHOT loadedShot = { 0 };
+        LPREGSHOT originalShot = lpShot;
 
         // Clear Get File Name result buffer
         ZeroMemory(filepath, sizeof(filepath));
@@ -2550,19 +2791,25 @@ VOID SaveShot(LPREGSHOT lpShot)
             return FALSE;
         }
 
-        cbFileSize = GetFileSize(hFileWholeReg, NULL);
-        if (sizeof(fileheader) > cbFileSize) {
+        if (!GetFileSizeEx(hFileWholeReg, &fileSize) || fileSize.QuadPart > MAXLONG
+            || fileSize.QuadPart < offsetof(FILEHEADER, nFHVersion)) {
             CloseHandle(hFileWholeReg);
             ErrMsg(TEXT("wrong filesize"));  //TODO: I18N, create text index and translate
             return FALSE;
         }
+        cbFileSize = (DWORD)fileSize.QuadPart;
 
         // Initialize file header
         ZeroMemory(&fileheader, sizeof(fileheader));
         ZeroMemory(&fileextradata, sizeof(fileextradata));
 
         // Read first part of file header from file (signature, nHeaderSize)
-        ReadFile(hFileWholeReg, &fileheader, offsetof(FILEHEADER, ofsHKLM), &NBW, NULL);
+        if (!ReadFile(hFileWholeReg, &fileheader, offsetof(FILEHEADER, ofsHKLM), &NBW, NULL)
+            || NBW != offsetof(FILEHEADER, ofsHKLM)) {
+            CloseHandle(hFileWholeReg);
+            ErrMsg(TEXT("Reading ERROR!"));
+            return FALSE;
+        }
 
         // Check for valid file signatures (SBCS/MBCS and UTF-16 signature)
         if ((0 != strncmp(szRegshotFileSignatureSBCS, fileheader.signature, MAX_SIGNATURE_LENGTH)) && (0 != strncmp(szRegshotFileSignatureUTF16, fileheader.signature, MAX_SIGNATURE_LENGTH))) {
@@ -2582,12 +2829,13 @@ VOID SaveShot(LPREGSHOT lpShot)
             return FALSE;
         }
 
-        // Clear shot
-        cEnd = 0;
-        FreeShot(lpShot);
-
         // Allocate memory to hold the complete file
         lpFileBuffer = MYALLOC(cbFileSize);
+        if (lpFileBuffer == NULL) {
+            CloseHandle(hFileWholeReg);
+            ErrMsg(TEXT("Not enough memory to load the snapshot."));
+            return FALSE;
+        }
 
         // Setup GUI for loading...
         cEnd = cbFileSize;
@@ -2604,9 +2852,12 @@ VOID SaveShot(LPREGSHOT lpShot)
             }
 
             // Read the next block
-            ReadFile(hFileWholeReg, lpFileBuffer + cbFileRead, cbReadSize, &NBW, NULL);
-            if (NBW != cbReadSize) {
+            if (!ReadFile(hFileWholeReg, lpFileBuffer + cbFileRead, cbReadSize, &NBW, NULL)
+                || NBW != cbReadSize) {
                 CloseHandle(hFileWholeReg);
+                MYFREE(lpFileBuffer);
+                lpFileBuffer = NULL;
+                UI_ShowHideProgressBar(SW_HIDE);
                 ErrMsg(TEXT("Reading ERROR!"));  //TODO: I18N, create text index and translate
                 return FALSE;
             }
@@ -2652,6 +2903,14 @@ VOID SaveShot(LPREGSHOT lpShot)
         }
 
         // Copy file header to structure
+        if (nSourceSize > cbFileSize || nSourceSize < offsetof(FILEHEADER, nFHVersion)) {
+            MYFREE(lpFileBuffer);
+            lpFileBuffer = NULL;
+            UI_ShowHideCounters(SW_HIDE);
+            ErrMsg(TEXT("Invalid snapshot header."));
+            return FALSE;
+        }
+        ZeroMemory(&fileheader, sizeof(fileheader));
         CopyMemory(&fileheader, lpFileBuffer, nSourceSize);
 
         // Enhance data of old headers to be used with newer code
@@ -2683,18 +2942,12 @@ VOID SaveShot(LPREGSHOT lpShot)
             }
         }
 
-        // Check structure boundaries
-        if (sizeof(SAVEKEYCONTENT) < fileheader.nKCSize) {
-            fileheader.nKCSize = sizeof(SAVEKEYCONTENT);
-        }
-        if (sizeof(SAVEVALUECONTENT) < fileheader.nVCSize) {
-            fileheader.nVCSize = sizeof(SAVEVALUECONTENT);
-        }
-        if (sizeof(SAVEHEADFILE) < fileheader.nHFSize) {
-            fileheader.nHFSize = sizeof(SAVEHEADFILE);
-        }
-        if (sizeof(SAVEFILECONTENT) < fileheader.nFCSize) {
-            fileheader.nFCSize = sizeof(SAVEFILECONTENT);
+        if (!ValidateHive(lpFileBuffer, cbFileSize, &fileheader)) {
+            MYFREE(lpFileBuffer);
+            lpFileBuffer = NULL;
+            UI_ShowHideCounters(SW_HIDE);
+            ErrMsg(TEXT("Invalid snapshot: damaged structures, strings, or cyclic links."));
+            return FALSE;
         }
 
         // Check for incompatible char size (known: 1 = SBCS/MBCS, 2 = UTF-16)
@@ -2765,6 +3018,10 @@ VOID SaveShot(LPREGSHOT lpShot)
         // ^^^ here the file header can be checked for additional extended content
         // * remember that files from older versions do not provide these additional data
 
+        // Build separately so allocation failures preserve the previous shot too.
+        cEnd = 0;
+        lpShot = &loadedShot;
+
         // New temporary string buffer
         lpStringBuffer = NULL;
 
@@ -2774,10 +3031,14 @@ VOID SaveShot(LPREGSHOT lpShot)
                 // Copy string to an aligned memory block
                 nSourceSize = fileheader.nComputerNameLen * fileheader.nCharSize;
                 nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+                if (lpStringBuffer == NULL)
+                    goto loadAllocationFailed;
                 ZeroMemory(lpStringBuffer, nStringBufferSize);
                 CopyMemory(lpStringBuffer, (lpFileBuffer + fileheader.ofsComputerName), nSourceSize);
 
                 lpShot->lpszComputerName = MYALLOC(fileheader.nComputerNameLen * sizeof(TCHAR));
+                if (lpShot->lpszComputerName == NULL)
+                    goto loadAllocationFailed;
                 if (fileextradata.bSameCharSize) {
                     _tcsncpy_s(lpShot->lpszComputerName, fileheader.nComputerNameLen, lpStringBuffer, fileheader.nComputerNameLen);
                 }
@@ -2796,10 +3057,14 @@ VOID SaveShot(LPREGSHOT lpShot)
             nSourceSize = strnlen((const char*)&fileheader.computername, OLD_COMPUTERNAMELEN);
             if (0 < nSourceSize) {  // otherwise leave it NULL
                 nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, (nSourceSize + 1), REGSHOT_BUFFER_BLOCK_BYTES);
+                if (lpStringBuffer == NULL)
+                    goto loadAllocationFailed;
                 ZeroMemory(lpStringBuffer, nStringBufferSize);
                 CopyMemory(lpStringBuffer, &fileheader.computername, nSourceSize);
 
                 lpShot->lpszComputerName = MYALLOC((nSourceSize + 1) * sizeof(TCHAR));
+                if (lpShot->lpszComputerName == NULL)
+                    goto loadAllocationFailed;
 #ifdef _UNICODE
                 MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED, (LPCSTR)lpStringBuffer, (int)(nSourceSize + 1), lpShot->lpszComputerName, (int)(nSourceSize + 1));
 #else
@@ -2815,10 +3080,14 @@ VOID SaveShot(LPREGSHOT lpShot)
                 // Copy string to an aligned memory block
                 nSourceSize = fileheader.nUserNameLen * fileheader.nCharSize;
                 nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, nSourceSize, REGSHOT_BUFFER_BLOCK_BYTES);
+                if (lpStringBuffer == NULL)
+                    goto loadAllocationFailed;
                 ZeroMemory(lpStringBuffer, nStringBufferSize);
                 CopyMemory(lpStringBuffer, (lpFileBuffer + fileheader.ofsUserName), nSourceSize);
 
                 lpShot->lpszUserName = MYALLOC(fileheader.nUserNameLen * sizeof(TCHAR));
+                if (lpShot->lpszUserName == NULL)
+                    goto loadAllocationFailed;
                 if (fileextradata.bSameCharSize) {
                     _tcsncpy_s(lpShot->lpszUserName, fileheader.nUserNameLen, lpStringBuffer, fileheader.nUserNameLen);
                 }
@@ -2837,10 +3106,14 @@ VOID SaveShot(LPREGSHOT lpShot)
             nSourceSize = strnlen((const char*)&fileheader.username, OLD_COMPUTERNAMELEN);
             if (0 < nSourceSize) {  // otherwise leave it NULL
                 nStringBufferSize = AdjustBuffer(&lpStringBuffer, nStringBufferSize, (nSourceSize + 1), REGSHOT_BUFFER_BLOCK_BYTES);
+                if (lpStringBuffer == NULL)
+                    goto loadAllocationFailed;
                 ZeroMemory(lpStringBuffer, nStringBufferSize);
                 CopyMemory(lpStringBuffer, &fileheader.username, nSourceSize);
 
                 lpShot->lpszUserName = MYALLOC((nSourceSize + 1) * sizeof(TCHAR));
+                if (lpShot->lpszUserName == NULL)
+                    goto loadAllocationFailed;
 #ifdef _UNICODE
                 MultiByteToWideChar(CP_ACP, MB_PRECOMPOSED, (LPCSTR)lpStringBuffer, (int)(nSourceSize + 1), lpShot->lpszUserName, (int)(nSourceSize + 1));
 #else
@@ -2858,6 +3131,8 @@ VOID SaveShot(LPREGSHOT lpShot)
 
         if (0 != fileheader.ofsHKLM) {
             LoadRegKeys(lpShot, fileheader.ofsHKLM, NULL, &lpShot->lpHKLM);
+            if (lpShot->fIncomplete)
+                goto loadAllocationFailed;
 
             // Update counters display (keys/values final)
             nCurrentTime = GetTickCount();
@@ -2866,6 +3141,8 @@ VOID SaveShot(LPREGSHOT lpShot)
 
         if (0 != fileheader.ofsHKU) {
             LoadRegKeys(lpShot, fileheader.ofsHKU, NULL, &lpShot->lpHKU);
+            if (lpShot->fIncomplete)
+                goto loadAllocationFailed;
 
             // Update counters display (keys/values final)
             nCurrentTime = GetTickCount();
@@ -2874,6 +3151,8 @@ VOID SaveShot(LPREGSHOT lpShot)
 
         if (0 != fileheader.ofsHF) {
             LoadHeadFiles(lpShot, fileheader.ofsHF, &lpShot->lpHF);
+            if (lpShot->fIncomplete)
+                goto loadAllocationFailed;
 
             // Update counters display (dirs/files final)
             nCurrentTime = GetTickCount();
@@ -2885,6 +3164,10 @@ VOID SaveShot(LPREGSHOT lpShot)
             + lpShot->stCounts.cValues
             + lpShot->stCounts.cDirs
             + lpShot->stCounts.cFiles;
+
+        FreeShot(originalShot);
+        *originalShot = loadedShot;
+        lpShot = originalShot;
 
         // Set GUI fields after loading...
         if (NULL != lpShot->lpHF) {
@@ -2925,6 +3208,18 @@ VOID SaveShot(LPREGSHOT lpShot)
         _tcscpy_s(lpszLastOpenDir, MAX_PATH, opfn.lpstrFile);
 
         return TRUE;
+
+loadAllocationFailed:
+        FreeShot(&loadedShot);
+        if (lpStringBuffer != NULL) {
+            MYFREE(lpStringBuffer);
+            lpStringBuffer = NULL;
+        }
+        MYFREE(lpFileBuffer);
+        lpFileBuffer = NULL;
+        UI_ShowHideCounters(SW_HIDE);
+        ErrMsg(TEXT("Not enough memory to load the snapshot. The previous shot was kept."));
+        return FALSE;
     }
 
 
