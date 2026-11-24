@@ -1478,25 +1478,26 @@ VOID FreeShot(LPREGSHOT lpShot)
 // Get registry snap shot
 // ----------------------------------------------------------------------
 static LONG EnumerateSnapshotValue(HKEY key, DWORD index, DWORD* nameLength,
-    DWORD* type, DWORD* dataLength)
+    DWORD* type, DWORD* dataLength, DWORD nameCapacity, DWORD dataCapacity)
 {
     DWORD retry;
     LONG error;
 
     for (retry = 0; ; ++retry) {
-        *nameLength = (DWORD)(nStringBufferSize / sizeof(TCHAR));
-        *dataLength = (DWORD)nDataBufferSize;
+        *nameLength = nameCapacity;
+        *dataLength = dataCapacity;
         error = RegEnumValue(key, index, lpStringBuffer, nameLength, NULL,
             type, lpDataBuffer, dataLength);
         if (error != ERROR_MORE_DATA || retry == 8)
             return error;
-        if (nStringBufferSize > MAXDWORD / 2 || nDataBufferSize > MAXDWORD / 2)
+        if (nameCapacity > MAXDWORD / (2 * sizeof(TCHAR)) || dataCapacity > MAXDWORD / 2)
             return ERROR_NOT_ENOUGH_MEMORY;
+        nameCapacity *= 2;
+        dataCapacity = *dataLength > dataCapacity ? *dataLength : dataCapacity * 2;
         nStringBufferSize = AdjustBuffer((LPVOID*)&lpStringBuffer, nStringBufferSize,
-            nStringBufferSize * 2, REGSHOT_BUFFER_BLOCK_BYTES);
+            nameCapacity * sizeof(TCHAR), REGSHOT_BUFFER_BLOCK_BYTES);
         nDataBufferSize = AdjustBuffer((LPVOID*)&lpDataBuffer, nDataBufferSize,
-            *dataLength > nDataBufferSize ? *dataLength : nDataBufferSize * 2,
-            REGSHOT_BUFFER_BLOCK_BYTES);
+            dataCapacity, REGSHOT_BUFFER_BLOCK_BYTES);
         if (lpStringBuffer == NULL || lpDataBuffer == NULL)
             return ERROR_NOT_ENOUGH_MEMORY;
     }
@@ -1648,7 +1649,8 @@ LPKEYCONTENT GetRegistrySnap(LPREGSHOT lpShot, HKEY hRegKey, LPTSTR lpszRegKeyNa
             lplpVCPrev = &lpKC->lpFirstVC;
             for (i = 0; ; i++) {
                 nErrNo = EnumerateSnapshotValue(hRegKey, i, &cchValueName,
-                    &nValueType, &cbValueData);
+                    &nValueType, &cbValueData, cchMaxValueName,
+                    cbMaxValueData != 0 ? cbMaxValueData : 1);
                 if (ERROR_NO_MORE_ITEMS == nErrNo) {
                     break;
                 }

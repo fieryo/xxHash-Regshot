@@ -9,12 +9,16 @@ static TCHAR hivePath[MAX_PATH];
 static int loadErrors;
 static BOOL failHiveWrite;
 static BOOL retryValue;
+static BOOL checkValueCapacity;
 static int registryMode;
 static HKEY registryRoot, queryDeniedKey;
 static int keyCalls;
 static BOOL keepKeyGrowing;
 static size_t nameComparisons;
 static BOOL profileRegistry;
+static BOOL profileLegacyCapacity;
+static ULONGLONG profileDataBytes;
+static DWORD profileMaxDataCapacity;
 typedef struct {
     ULONGLONG calls;
     LONGLONG ticks;
@@ -97,11 +101,24 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
     (void)key;
     (void)reserved;
     if (!retryValue) {
+        if (profileRegistry) {
+            if (profileLegacyCapacity) {
+                *length = (DWORD)(nStringBufferSize / sizeof(TCHAR));
+                *size = (DWORD)nDataBufferSize;
+            }
+            profileDataBytes += *size;
+            if (*size > profileMaxDataCapacity)
+                profileMaxDataCapacity = *size;
+        }
         PROFILE_REGISTRY_RETURN(profileValues,
             RegEnumValue(key, index, name, length, reserved, type, data, size));
     }
     assert(index == 7);
     ++valueCalls;
+    if (checkValueCapacity) {
+        assert(*length == (valueCalls == 1 ? 1 : 2));
+        assert(*size == (valueCalls == 1 ? 1 : 4096));
+    }
     if (valueCalls == 1 || keepGrowing) {
         *size = 4096;
         return ERROR_MORE_DATA;
@@ -337,11 +354,23 @@ static void TestValueRetry(void)
     lpStringBuffer = MYALLOC(nStringBufferSize);
     nDataBufferSize = 1;
     lpDataBuffer = MYALLOC(nDataBufferSize);
-    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength) == ERROR_SUCCESS);
+    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength, 1, 1) == ERROR_SUCCESS);
     assert(valueCalls == 2 && nameLength == 1 && dataLength == 1 && lpDataBuffer[0] == 0x42);
+    MYFREE(lpStringBuffer);
+    MYFREE(lpDataBuffer);
+    nStringBufferSize = 1024 * 1024;
+    nDataBufferSize = 8 * 1024 * 1024;
+    lpStringBuffer = MYALLOC(nStringBufferSize);
+    lpDataBuffer = MYALLOC(nDataBufferSize);
+    valueCalls = 0;
+    checkValueCapacity = TRUE;
+    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength, 1, 1) == ERROR_SUCCESS);
+    assert(valueCalls == 2 && nameLength == 1 && dataLength == 1 && lpDataBuffer[0] == 0x42);
+    assert(nStringBufferSize == 1024 * 1024 && nDataBufferSize == 8 * 1024 * 1024);
+    checkValueCapacity = FALSE;
     valueCalls = 0;
     keepGrowing = TRUE;
-    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength) == ERROR_MORE_DATA);
+    assert(EnumerateSnapshotValue(NULL, 7, &nameLength, &type, &dataLength, 1, 1) == ERROR_MORE_DATA);
     assert(valueCalls == 9);
     MYFREE(lpStringBuffer);
     MYFREE(lpDataBuffer);
@@ -1052,6 +1081,9 @@ static int BenchmarkRegistry(void)
     PrintRegistryProfile("RegEnumValue", &profileValues, frequency.QuadPart);
     PrintRegistryProfile("RegEnumKeyEx", &profileKeys, frequency.QuadPart);
     PrintRegistryProfile("HeapAlloc", &profileAlloc, frequency.QuadPart);
+    printf("RegEnumValue mean offered data capacity: %.0f bytes; maximum: %lu bytes\n",
+        profileValues.calls != 0 ? (double)profileDataBytes / (double)profileValues.calls : 0,
+        profileMaxDataCapacity);
     {
         BOOL incomplete = shot.fIncomplete;
 
@@ -1080,6 +1112,10 @@ int main(int argc, char** argv)
     lprgszFileSkipStrings = noSkips;
     SetTextsToDefaultLanguage();
     nLastTime = GetTickCount();
+    if (argc == 2 && strcmp(argv[1], "--benchmark-registry-legacy-capacity") == 0) {
+        profileLegacyCapacity = TRUE;
+        return BenchmarkRegistry();
+    }
     if (argc == 2 && strcmp(argv[1], "--benchmark-registry") == 0)
         return BenchmarkRegistry();
     puts("Testing registry formatting");
