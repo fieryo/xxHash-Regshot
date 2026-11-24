@@ -8,6 +8,7 @@ state; larger files stream through a 256 KiB sequential-read buffer.
 XXH3 is non-cryptographic and is not suitable for security verification.
 
 New hive files store hashes and directory scan status in file-content version 4.
+They require this updated application; older builds reject version 4 snapshots.
 Version 3 hashes remain readable. Older hive files
 can still be loaded, but their file hashes are unknown, so comparisons
 with them rely on file metadata. Hashing failures are written to the
@@ -73,15 +74,15 @@ most recently saved snapshot. It is off by default and stored as
   match the baseline, the baseline checkpoint is still in the journal, the
   journal has no record for the file since that checkpoint, the file was not
   left open with unrecorded changes, and its size, write time, and attributes
-  are unchanged. Reparse points are always hashed.
+  are unchanged. File reparse points are always hashed.
 - After the scan, records written while scanning are read; reused files that
   changed meanwhile are hashed again.
 - Anything else uses the classic scan and hashes the file: no administrator
   rights, non-NTFS volumes, ReFS/V3 records, journal deleted, recreated, or
   wrapped, a missing or corrupt baseline, and enumeration without file IDs.
   Non-elevated runs use classic enumeration immediately. Unusable volumes
-  switch to classic enumeration for ordinary descendants; reparse points
-  are probed separately because they can lead to a different volume.
+  switch to classic enumeration for ordinary descendants; explicitly selected
+  scan roots are probed separately because they can be on a different volume.
 
 After a snapshot is saved successfully, `RegshotUsnBaseline.dat` is atomically
 replaced next to `regshot.ini` (checksummed volume checkpoints plus file ID,
