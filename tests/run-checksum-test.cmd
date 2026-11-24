@@ -15,5 +15,11 @@ if errorlevel 1 exit /b 1
 fileenum_test.exe
 set result=%errorlevel%
 del /q fileenum_test.exe fileenum_test.obj
+if not "%result%"=="0" exit /b %result%
+cl /nologo /W4 /DUNICODE /D_UNICODE /Fe:usn_test.exe usn_test.c
+if errorlevel 1 exit /b 1
+usn_test.exe
+set result=%errorlevel%
+del /q usn_test.exe usn_test.obj
 popd
 exit /b %result%

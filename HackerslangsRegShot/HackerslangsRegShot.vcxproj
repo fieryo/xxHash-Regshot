@@ -178,6 +178,7 @@
     </ClInclude>
     <ClInclude Include="work.h" />
     <ClInclude Include="fileenum.h" />
+    <ClInclude Include="usn.h" />
     <ClInclude Include="third_party\xxhash\xxhash.h" />
     <ClInclude Include="third_party\xxhash\xxh_x86dispatch.h" />
   </ItemGroup>
@@ -211,6 +212,7 @@
     <ClCompile Include="third_party\xxhash\xxh_x86dispatch.c" />
     <ClCompile Include="work.c" />
     <ClCompile Include="fileenum.c" />
+    <ClCompile Include="usn.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="HackerslangsRegShot.rc" />
