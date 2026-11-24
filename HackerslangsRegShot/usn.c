@@ -76,6 +76,7 @@ BOOL UsnReadChanges(HANDLE volume, ULONGLONG journalId, USN start,
         offset = sizeof(returned);
         while (offset < bytes) {
             USN_RECORD_V2 record;
+            USN_CHANGE change;
             DWORD remaining = bytes - offset;
             DWORD minimum = (DWORD)offsetof(USN_RECORD_V2, FileName);
 
@@ -90,11 +91,20 @@ BOOL UsnReadChanges(HANDLE volume, ULONGLONG journalId, USN start,
                 || record.FileNameOffset < minimum
                 || record.FileNameOffset > record.RecordLength
                 || record.FileNameLength > record.RecordLength - record.FileNameOffset
+                || (record.FileNameOffset % sizeof(WCHAR)) != 0
+                || (record.FileNameLength % sizeof(WCHAR)) != 0
                 || record.Usn < cursor || record.Usn >= returned) {
                 SetLastError(ERROR_INVALID_DATA);
                 goto done;
             }
-            if (record.Usn < target && !callback(record.FileReferenceNumber, context)) {
+            change.fileId = record.FileReferenceNumber;
+            change.parentId = record.ParentFileReferenceNumber;
+            change.usn = record.Usn;
+            change.reason = record.Reason;
+            change.attributes = record.FileAttributes;
+            change.name = buffer + offset + record.FileNameOffset;
+            change.nameBytes = record.FileNameLength;
+            if (record.Usn < target && !callback(&change, context)) {
                 SetLastError(ERROR_OPERATION_ABORTED);
                 goto done;
             }
