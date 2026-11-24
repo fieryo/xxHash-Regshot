@@ -1911,7 +1911,8 @@ VOID Shot(LPREGSHOT lpShot)
 
     // Take file shot
 #ifdef _WINDOWS
-    if (1 == SendMessage(GetDlgItem(hWnd, IDC_CHECKDIR), BM_GETCHECK, (WPARAM)0, (LPARAM)0)) {
+    if (BST_CHECKED == SendMessage(GetDlgItem(hWnd, IDC_CHECKDIR), BM_GETCHECK, (WPARAM)0, (LPARAM)0)
+        || BST_CHECKED == SendMessage(GetDlgItem(hWnd, IDC_CHECKUSN), BM_GETCHECK, (WPARAM)0, (LPARAM)0)) {
 #endif
         FileShot(lpShot);
 

@@ -1,7 +1,7 @@
 # xxHash-Regshot
 An improved version of Regshot with xxHash
 
-File snapshots use the 64-bit XXH3 hash from xxHash 0.8.4. The upstream
+By default, file snapshots use the 64-bit XXH3 hash from xxHash 0.8.4. The upstream
 x86 dispatcher selects AVX2 when supported, with a fallback on older CPUs.
 Files up to 256 KiB use the one-shot XXH3 path without allocating streaming
 state; larger files stream through a 256 KiB sequential-read buffer.
@@ -40,7 +40,8 @@ Directory scans request basic directory information and large-fetch
 enumeration when supported, falling back to compatible Windows APIs.
 The default scan path is `C:\`, not just `C:\Windows`. A saved `ExtDir`
 setting is preserved; change the **Scan dir** field to `C:\` if an existing
-`regshot.ini` still selects `C:\Windows`. Enable **Scan dir** to include files.
+`regshot.ini` still selects `C:\Windows`. Enable **Scan dir** or **USN
+incremental** to include files.
 An error partway through file-ID enumeration restarts that directory with
 classic enumeration. Protected, locked, disappeared, and overlong directory
 paths are retained with an unscanned-contents marker instead of discarding
@@ -91,6 +92,24 @@ Check **USN incremental** (next to *Scan dir*) to reuse file hashes from the
 most recently saved snapshot. It is off by default and stored as
 `UsnIncremental` in `regshot.ini`.
 
+**xxHash files** independently controls content hashing and defaults to on
+(`HashFiles=1` in `regshot.ini`). For a size/date-only test, enable **USN
+incremental**, uncheck **xxHash files**, and leave the directory field set to
+`C:\`. **Scan dir** may be unchecked: either it or **USN incremental** enables
+file enumeration. Uncheck both for registry-only shots.
+
+With hashing off, files are compared by size, last-write time, and attributes;
+no scanned file contents are read for hashing, including journal fallback and
+explicitly selected individual files. Cached hashes are neither reused nor
+stored as valid. Saved shots retain unknown hashes, so loading them does not
+re-enable hash comparison. Same-size changes with preserved timestamps and
+attributes are intentionally not detected, even if USN recorded activity.
+USN still probes volumes, enumerates file IDs, and maintains journal
+checkpoints where supported, but this implementation always enumerates
+directories; it is not a journal-only metadata scan. With no hashes to reuse,
+USN does not eliminate that enumeration cost. Turning hashing back on requires
+a full initial hash scan.
+
 - Directories are still fully enumerated, so new, deleted, renamed, and moved
   files and directories in scanned areas are reported as in a classic scan.
   The same unavailable-directory and reparse-point rules apply. Hashes are
@@ -115,8 +134,9 @@ size, write time, attributes, and XXH3 hash). Saving a snapshot that was not
 taken in USN mode, or a failed save, deletes it. Changes made while the volume
 was not journaling (for example, offline edits from another OS) can only be
 detected through size and write time.
-The first shot has no hashes to reuse and must read every accessible file's
-contents; USN incremental mode speeds up later shots after a successful save.
+With hashing enabled, the first shot has no hashes to reuse and must read every
+accessible file's contents; USN incremental mode speeds up later shots after a
+successful save.
 Initial full-drive time is therefore still limited by disk throughput,
 file count, and antivirus scanning, not just hash computation.
 

@@ -114,6 +114,8 @@ VOID SetTextsToDefaultLanguage(VOID)
     asLangTexts[iszTextRegistryScanWarning].lpszText = TEXT("Snapshot captured. %lu registry keys could not be fully read. Their values and subkeys will be excluded from comparisons. The snapshot can still be saved.");
     asLangTexts[iszTextUnscannedRegKeys].lpszText = TEXT("Unscanned registry keys:");
     asLangTexts[iszTextCheckUsn].nIDDlgItem = IDC_CHECKUSN;
+    asLangTexts[iszTextCheckHash].lpszText = TEXT("&xxHash files");
+    asLangTexts[iszTextCheckHash].nIDDlgItem = IDC_CHECKHASH;
 
     asLangTexts[iszTextMenuShot].lpszText = TEXT("&Shot");
     asLangTexts[iszTextMenuShotSave].lpszText = TEXT("Shot and Sa&ve...");

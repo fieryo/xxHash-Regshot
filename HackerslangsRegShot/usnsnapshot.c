@@ -145,7 +145,7 @@ USN_SNAPSHOT* UsnSnapshotBegin(LPCTSTR baselinePath)
     USN_SNAPSHOT* snapshot;
 
     if (!CanUseJournal()) {
-        OutputDebugString(TEXT("USN: administrator token unavailable; using classic enumeration and hashing.\n"));
+        OutputDebugString(TEXT("USN: administrator token unavailable; using classic enumeration.\n"));
         return NULL;
     }
     snapshot = calloc(1, sizeof(*snapshot));

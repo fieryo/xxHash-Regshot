@@ -547,7 +547,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
             lpFatherFC->nFileSizeHigh = FindData.nFileSizeHigh;
             lpFatherFC->nFileAttributes = FindData.dwFileAttributes;
             lpFatherFC->nChkSumUnknown = TRUE;
-            if (ISFILE(lpFatherFC->nFileAttributes)) {
+            if (ISFILE(lpFatherFC->nFileAttributes) && !lpShot->fMetadataOnly) {
                 lpFatherFC->nChkSumUnknown = !ChecksumFromFile(lpszFullName, &lpFatherFC->nChkSum);
                 if (lpFatherFC->nChkSumUnknown) {
                     OutputDebugString(TEXT("Could not hash file: "));
@@ -677,6 +677,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         lpFC->nFileSizeLow = FindData.nFileSizeLow;
         lpFC->nFileSizeHigh = FindData.nFileSizeHigh;
         lpFC->nFileAttributes = FindData.dwFileAttributes;
+        lpFC->nChkSumUnknown = TRUE;
         if (ISFILE(FindData.dwFileAttributes)) {
             BOOL fCacheable = FALSE;
 
@@ -686,13 +687,15 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
 
                 lpFC->nFileId = nFileId;
                 lpFC->nUsnVolume = nUsnVolume;
-                fCacheable = UsnSnapshotCanCache(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, FindData.dwFileAttributes);
-                if (UsnSnapshotReuseHash(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, nSize, nWriteTime, FindData.dwFileAttributes, &lpFC->nChkSum)) {
-                    lpFC->nChkSumUnknown = FALSE;
-                    lpFC->fUsnFlags |= USNFC_REUSED;
+                if (!lpShot->fMetadataOnly) {
+                    fCacheable = UsnSnapshotCanCache(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, FindData.dwFileAttributes);
+                    if (UsnSnapshotReuseHash(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, nSize, nWriteTime, FindData.dwFileAttributes, &lpFC->nChkSum)) {
+                        lpFC->nChkSumUnknown = FALSE;
+                        lpFC->fUsnFlags |= USNFC_REUSED;
+                    }
                 }
             }
-            if (!(lpFC->fUsnFlags & USNFC_REUSED)) {
+            if (!lpShot->fMetadataOnly && !(lpFC->fUsnFlags & USNFC_REUSED)) {
                 LPTSTR lpszFullFileName = GetWholeFileName(lpFC, 0);
 
                 lpFC->nChkSumUnknown = !ChecksumFromFile(lpszFullFileName, &lpFC->nChkSum);
@@ -859,6 +862,10 @@ static VOID FinishUsnScan(LPREGSHOT lpShot)
     LPHEADFILE lpHF;
     DWORD i;
 
+    if (lpShot->fMetadataOnly) {
+        UsnSnapshotEndScan(lpShot->lpUsnSnapshot);
+        return;
+    }
     sContext.lpSnapshot = lpShot->lpUsnSnapshot;
     sContext.lpLateChanges = MYALLOC0(USN_BASELINE_MAX_VOLUMES * sizeof(USN_CHANGE_SET));
     sContext.lpLateState = MYALLOC0(USN_BASELINE_MAX_VOLUMES * sizeof(BYTE));
@@ -937,7 +944,7 @@ VOID SaveUsnBaseline(LPREGSHOT lpShot, BOOL fHiveSaved)
         }
     }
     if (!fSaved) {
-        OutputDebugString(TEXT("USN: baseline unavailable or save failed; removing it and using full hashing next time.\n"));
+        OutputDebugString(TEXT("USN: baseline unavailable or save failed; removing it.\n"));
         DeleteFile(lpszPath);  // never keep a baseline from an older save
     }
     MYFREE(lpszPath);
@@ -963,6 +970,7 @@ VOID FileShot(LPREGSHOT lpShot)
 {
 #ifdef _WINDOWS
     UINT cchExtDir;
+    lpShot->fMetadataOnly = BST_CHECKED != SendMessage(GetDlgItem(hWnd, IDC_CHECKHASH), BM_GETCHECK, (WPARAM)0, (LPARAM)0);
     cchExtDir = GetDlgItemText(hWnd, IDC_EDITDIR, lpszExtDir, EXTDIRLEN);  // length incl. NULL character
 #endif
 #ifdef _CONSOLE
