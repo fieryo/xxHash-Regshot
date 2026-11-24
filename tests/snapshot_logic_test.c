@@ -298,6 +298,7 @@ static void TestLoadFailures(void)
     _tcscpy_s(shot.lpszComputerName, 8, TEXT("old"));
     // File buffer, key/name/value/data buffers, head and file/name nodes.
     for (failure = 0; failure < 10; ++failure) {
+        printf("Testing load allocation failure %d\n", failure);
         failAllocationAfter = failure;
         assert(!LoadShot(&shot));
         failAllocationAfter = -1;
@@ -416,17 +417,25 @@ int main(void)
     TCHAR dirs[EXTDIRLEN], openDir[MAX_PATH];
 
     hHeap = GetProcessHeap();
+    setvbuf(stdout, NULL, _IONBF, 0);
     lpszMessage = message;
     lpszExtDir = dirs;
     lpszLastOpenDir = openDir;
     SetTextsToDefaultLanguage();
     nLastTime = GetTickCount();
+    puts("Testing registry formatting");
     TestRegistryFormatting();
+    puts("Testing value growth");
     TestValueRetry();
+    puts("Testing hive validation");
     TestHiveValidation();
+    puts("Testing load cleanup");
     TestLoadFailures();
+    puts("Testing path trimming");
     TestPathTrimming();
+    puts("Testing enumeration recovery");
     TestEnumerationRecovery();
+    puts("Testing baseline permissions");
     TestBaselinePermissions();
     puts("Snapshot logic tests passed");
     return 0;
