@@ -148,14 +148,37 @@ static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 #include "../HackerslangsRegShot/regshot.c"
 #include "../HackerslangsRegShot/usnsnapshot.c"
 #include "../HackerslangsRegShot/fileenum.h"
+#include "../HackerslangsRegShot/checksum.h"
 
 static int enumerationMode;
 static int classicRestarts;
 static int directoryOpens;
+static int hashCalls, reuseCalls, idRequests;
+static BOOL offerCachedHash;
+
+static BOOL CountChecksumFromFile(LPCTSTR path, QWORD* checksum)
+{
+    ++hashCalls;
+    return ChecksumFromFile(path, checksum);
+}
+
+static BOOL FakeReuseHash(const USN_SNAPSHOT* snapshot, DWORD volume, ULONGLONG fileId,
+    ULONGLONG size, ULONGLONG writeTime, DWORD attributes, ULONGLONG* hash)
+{
+    ++reuseCalls;
+    if (offerCachedHash) {
+        *hash = 0x1234;
+        return TRUE;
+    }
+    return UsnSnapshotReuseHash(snapshot, volume, fileId, size, writeTime, attributes, hash);
+}
+
 static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds,
     const SNAPSHOT_DIR* parent, ULONGLONG directoryId, WIN32_FIND_DATA* data, ULONGLONG* id)
 {
     ++directoryOpens;
+    if (wantIds)
+        ++idRequests;
     if (enumerationMode == 3 || enumerationMode == 5) {
         SetLastError(enumerationMode == 3 ? ERROR_ACCESS_DENIED : ERROR_READ_FAULT);
         return FALSE;
@@ -167,6 +190,18 @@ static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds
         _tcscpy_s(data->cFileName, MAX_PATH, TEXT("loop"));
         data->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
         *id = 0;
+        return TRUE;
+    }
+    if (enumerationMode == 7) {
+        assert(wantIds);
+        ZeroMemory(dir, sizeof(*dir));
+        dir->find = dir->directory = INVALID_HANDLE_VALUE;
+        dir->ids = TRUE;
+        ZeroMemory(data, sizeof(*data));
+        _tcscpy_s(data->cFileName, MAX_PATH, TEXT("file"));
+        data->dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
+        data->nFileSizeLow = 2;
+        *id = 123;
         return TRUE;
     }
     if (enumerationMode == 1 && wantIds) {
@@ -186,7 +221,7 @@ static BOOL FakeSnapshotDirOpen(SNAPSHOT_DIR* dir, LPCTSTR pattern, BOOL wantIds
 
 static BOOL FakeSnapshotDirNext(SNAPSHOT_DIR* dir, WIN32_FIND_DATA* data, ULONGLONG* id)
 {
-    if (enumerationMode == 4) {
+    if (enumerationMode == 4 || enumerationMode == 7) {
         SetLastError(ERROR_NO_MORE_FILES);
         return FALSE;
     }
@@ -199,9 +234,11 @@ static BOOL FakeSnapshotDirNext(SNAPSHOT_DIR* dir, WIN32_FIND_DATA* data, ULONGL
 
 static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD serial)
 {
-    return enumerationMode == 1 ? 1 : UsnSnapshotVolume(snapshot, guid, serial);
+    return enumerationMode == 1 || enumerationMode == 7 ? 1 : UsnSnapshotVolume(snapshot, guid, serial);
 }
 
+#define ChecksumFromFile CountChecksumFromFile
+#define UsnSnapshotReuseHash FakeReuseHash
 #define SnapshotDirOpen FakeSnapshotDirOpen
 #define SnapshotDirNext FakeSnapshotDirNext
 #define UsnSnapshotVolume FakeSnapshotVolume
@@ -209,6 +246,8 @@ static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD
 #undef SnapshotDirOpen
 #undef SnapshotDirNext
 #undef UsnSnapshotVolume
+#undef ChecksumFromFile
+#undef UsnSnapshotReuseHash
 
 static void TestRegistryFormatting(void)
 {
@@ -626,6 +665,140 @@ static void TestPathTrimming(void)
     assert(TrimSnapshotPath(root) && _tcscmp(root, TEXT("C:")) == 0);
 }
 
+static void TestMetadataOnly(void)
+{
+    TCHAR temp[MAX_PATH], path[MAX_PATH], filePath[MAX_PATH];
+    REGSHOT shot = { 0 };
+    USN_SNAPSHOT snapshot = { 0 };
+    HANDLE file;
+    DWORD written;
+    FILECONTENT before, after;
+
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    _tcscpy_s(filePath, _countof(filePath), path);
+    _tcscat_s(filePath, _countof(filePath), TEXT("\\file"));
+    file = CreateFile(filePath, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(file != INVALID_HANDLE_VALUE);
+    assert(WriteFile(file, "hi", 2, &written, NULL) && written == 2);
+    CloseHandle(file);
+    hashCalls = reuseCalls = idRequests = 0;
+    offerCachedHash = TRUE;
+    enumerationMode = 7;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && reuseCalls == 1 && hashCalls == 0);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSum == 0x1234);
+    shot.lpUsnSnapshot = NULL;
+    FreeShot(&shot);
+
+    shot.fMetadataOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    hashCalls = reuseCalls = idRequests = 0;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 1 && idRequests == 1);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nFileId == 123);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nUsnVolume == 1);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->fUsnFlags == 0);
+    FinishUsnScan(&shot);
+    assert(hashCalls == 0 && reuseCalls == 0);
+    assert(CollectUsnEntries(shot.lpHF->lpFirstFC, NULL, 0) == 0);
+    shot.lpUsnSnapshot = NULL;
+    shot.fFilled = TRUE;
+    shot.stCounts.cAll = shot.stCounts.cDirs + shot.stCounts.cFiles;
+    assert(GetTempFileName(temp, TEXT("rs"), 0, hivePath));
+    SaveShot(&shot);
+    assert(!fHiveWriteFailed);
+    FreeShot(&shot);
+    assert(LoadShot(&shot));
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    before = after = *shot.lpHF->lpFirstFC->lpFirstSubFC;
+    before.nChkSum = 1;
+    after.nChkSum = 2;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcChanged.cFiles == 0);
+    FreeCompareResult();
+    after.fFileMatch = NOMATCH;
+    ++after.nFileSizeLow;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcModified.cFiles == 1);
+    FreeCompareResult();
+    after.fFileMatch = NOMATCH;
+    after.nFileSizeLow = before.nFileSizeLow;
+    ++after.nWriteDateTimeLow;
+    CompareFiles(&before, &after);
+    assert(CompareResult.stcModified.cFiles == 1);
+    FreeCompareResult();
+    FreeShot(&shot);
+    assert(DeleteFile(hivePath));
+
+    enumerationMode = 0;
+    offerCachedHash = FALSE;
+    shot.fMetadataOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 1);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    assert(hashCalls == 0 && reuseCalls == 0);
+    shot.lpUsnSnapshot = NULL;
+    FreeShot(&shot);
+    shot.fMetadataOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(&shot, filePath, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.lpHF->lpFirstFC->nChkSumUnknown && hashCalls == 0);
+    FreeShot(&shot);
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(&shot, filePath, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && !shot.lpHF->lpFirstFC->nChkSumUnknown && hashCalls == 1);
+    FreeShot(&shot);
+    assert(DeleteFile(filePath) && RemoveDirectory(path));
+}
+
+BOOL CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam);
+
+static void TestIndependentUsnOption(void)
+{
+    const int ids[] = { IDC_CHECKDIR, IDC_CHECKUSN, IDC_CHECKHASH, IDC_EDITDIR, IDC_BROWSE1 };
+    HWND parent, previousWindow = hWnd;
+    TCHAR temp[MAX_PATH], path[MAX_PATH];
+    REGSHOT shot = { 0 };
+    size_t i;
+
+    parent = CreateWindow(TEXT("STATIC"), TEXT("Regshot options test"), 0,
+        0, 0, 1, 1, NULL, NULL, NULL, NULL);
+    assert(parent != NULL);
+    for (i = 0; i < _countof(ids); ++i) {
+        assert(CreateWindow(i == 3 ? TEXT("EDIT") : TEXT("BUTTON"), TEXT(""),
+            WS_CHILD | (i < 3 ? BS_AUTOCHECKBOX : 0), 0, 0, 1, 1,
+            parent, (HMENU)(INT_PTR)ids[i], NULL, NULL) != NULL);
+    }
+    DialogProc(parent, WM_COMMAND, IDC_CHECKDIR, 0);
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_CHECKUSN)));
+    assert(!IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
+    SendDlgItemMessage(parent, IDC_CHECKUSN, BM_SETCHECK, BST_CHECKED, 0);
+    DialogProc(parent, WM_COMMAND, IDC_CHECKUSN, 0);
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_CHECKHASH)));
+    assert(SendDlgItemMessage(parent, IDC_CHECKDIR, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    SetDlgItemText(parent, IDC_EDITDIR, path);
+    hWnd = parent;
+    hashCalls = 0;
+    FileShot(&shot);
+    assert(shot.fMetadataOnly && !shot.fIncomplete && shot.stCounts.cDirs == 1 && hashCalls == 0);
+    FreeShot(&shot);
+    SendDlgItemMessage(parent, IDC_CHECKUSN, BM_SETCHECK, BST_UNCHECKED, 0);
+    DialogProc(parent, WM_COMMAND, IDC_CHECKUSN, 0);
+    assert(!IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
+    hWnd = previousWindow;
+    assert(DestroyWindow(parent) && RemoveDirectory(path));
+}
+
 static void TestEnumerationRecovery(void)
 {
     TCHAR temp[MAX_PATH], path[MAX_PATH], first[MAX_PATH], second[MAX_PATH];
@@ -832,6 +1005,10 @@ int main(void)
     TestLoadFailures();
     puts("Testing path trimming");
     TestPathTrimming();
+    puts("Testing USN metadata-only snapshots");
+    TestMetadataOnly();
+    puts("Testing independent USN option");
+    TestIndependentUsnOption();
     puts("Testing enumeration recovery");
     TestEnumerationRecovery();
     puts("Testing skipped-directory comparisons");

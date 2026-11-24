@@ -228,6 +228,7 @@ struct _REGSHOT {
     BOOL          fFilled;                  // Flag if Shot was done/loaded (even if result is empty)
     BOOL          fLoaded;                  // Flag if Shot was loaded from a file
     BOOL          fIncomplete;              // Enumeration failed; the shot must not be compared/saved
+    BOOL          fMetadataOnly;            // Do not read file contents or reuse cached hashes
     DWORD         cSkippedDirs;             // Unreadable directories and directory reparse points
     DWORD         cSkippedRegKeys;          // Keys with unavailable or partially read contents
     struct USN_SNAPSHOT* lpUsnSnapshot;     // USN volume checkpoints if taken in USN mode
@@ -671,6 +672,7 @@ enum eLangTexts {
     iszTextUnscannedDirs,
     iszTextRegistryScanWarning,
     iszTextUnscannedRegKeys,
+    iszTextCheckHash,
     // ATTENTION: add new language strings before this line, the last line is used to determine the count
     cLangStrings
 };
