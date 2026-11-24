@@ -179,6 +179,8 @@
     <ClInclude Include="work.h" />
     <ClInclude Include="fileenum.h" />
     <ClInclude Include="usn.h" />
+    <ClInclude Include="usnbaseline.h" />
+    <ClInclude Include="usnsnapshot.h" />
     <ClInclude Include="third_party\xxhash\xxhash.h" />
     <ClInclude Include="third_party\xxhash\xxh_x86dispatch.h" />
   </ItemGroup>
@@ -213,6 +215,8 @@
     <ClCompile Include="work.c" />
     <ClCompile Include="fileenum.c" />
     <ClCompile Include="usn.c" />
+    <ClCompile Include="usnbaseline.c" />
+    <ClCompile Include="usnsnapshot.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="HackerslangsRegShot.rc" />

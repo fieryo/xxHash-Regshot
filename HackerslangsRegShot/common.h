@@ -195,8 +195,14 @@ struct _FILECONTENT {
 	struct _FILECONTENT FAR* lpNextFC;      // Pointer to file's next file in the list of all files
 	struct _FILECONTENT FAR* lpPrevFC;      // Pointer to file's previous file in the list of all files
     DWORD  fFileMatch;                      // Flags used when comparing, until 1.8.2 it was byte
+    QWORD  nFileId;                         // NTFS file ID from USN mode, in memory only
+    DWORD  nUsnVolume;                      // 1-based USN snapshot volume, 0 if none
+    DWORD  fUsnFlags;                       // USNFC_* flags, in memory only
 };
 typedef struct _FILECONTENT FILECONTENT, FAR* LPFILECONTENT;
+
+#define USNFC_CACHEABLE 0x01                // Hash may be stored in the USN baseline
+#define USNFC_REUSED    0x02                // Hash was taken from the USN baseline
 
 
 // Adjusted for filecontent saving. 1.8
@@ -219,6 +225,7 @@ struct _REGSHOT {
     COUNTS        stCounts;
     BOOL          fFilled;                  // Flag if Shot was done/loaded (even if result is empty)
     BOOL          fLoaded;                  // Flag if Shot was loaded from a file
+    struct USN_SNAPSHOT* lpUsnSnapshot;     // USN volume checkpoints if taken in USN mode
 };
 typedef struct _REGSHOT REGSHOT, FAR* LPREGSHOT;
 
@@ -546,6 +553,8 @@ VOID    FreeAllHeadFiles(LPHEADFILE lpHF);
 VOID    ClearRegKeyMatchFlags(LPKEYCONTENT lpKC);
 VOID    FileShot(LPREGSHOT lpShot);
 LPTSTR  GetWholeFileName(LPFILECONTENT lpStartFC, size_t cchExtra);
+VOID    SaveUsnBaseline(LPREGSHOT lpShot, BOOL fHiveSaved);
+VOID    UsnSnapshotFree(struct USN_SNAPSHOT* snapshot);
 BOOL    ReplaceInvalidFileNameChars(LPTSTR lpszFileName);
 VOID    ErrMsg(LPTSTR lpszErrMsg);
 VOID    WriteTableHead(LPTSTR lpszText, DWORD nCount, BOOL fAsHTML);
@@ -635,6 +644,7 @@ enum eLangTexts {
     iszTextChronology,
     iszTextShotsNotChronological,
     iszTextQuestionSwapShots,
+    iszTextCheckUsn,
     // ATTENTION: add new language strings before this line, the last line is used to determine the count
     cLangStrings
 };

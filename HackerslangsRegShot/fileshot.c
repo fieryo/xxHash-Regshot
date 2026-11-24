@@ -23,6 +23,7 @@
 #include "common.h"
 #include "checksum.h"
 #include "fileenum.h"
+#include "usnsnapshot.h"
 
 // Workaround for older Platform/Windows SDKs (e.g. VS 6.0)
 #ifndef INVALID_FILE_ATTRIBUTES
@@ -338,10 +339,15 @@ VOID CompareHeadFiles(LPHEADFILE lpStartHF1, LPHEADFILE lpStartHF2)
 // ----------------------------------------------------------------------
 // Get file snap shot
 // ----------------------------------------------------------------------
-VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherFC, LPFILECONTENT* lplpCaller)
+// lpParentDir: enumerator of a parent on the same volume (non-reparse child), or NULL
+static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherFC, LPFILECONTENT* lplpCaller, const SNAPSHOT_DIR* lpParentDir)
 {
     LPFILECONTENT lpFC;
     HANDLE hFile;
+    SNAPSHOT_DIR sDir;
+    BOOL fFound;
+    ULONGLONG nFileId;
+    DWORD nUsnVolume;
 
     // Full dir/file name is already given
 
@@ -501,12 +507,13 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
         }
 
         _tcscat_s(lpszFindFileName, _tcslen(lpszFindFileName) + 4 + 1, TEXT("\\*.*"));
-        hFile = FindFirstSnapshotFile(lpszFindFileName, &FindData);
+        fFound = SnapshotDirOpen(&sDir, lpszFindFileName, NULL != lpShot->lpUsnSnapshot, lpParentDir,
+            (NULL != lpFatherFC) ? lpFatherFC->nFileId : 0, &FindData, &nFileId);
         if (lpszFindFileName != lpszFullName) {
             MYFREE(lpszFindFileName);
         }
     }  // End of extra local block
-    if (INVALID_HANDLE_VALUE == hFile) {  // error: nothing in dir, no access, etc.
+    if (!fFound) {  // error: nothing in dir, no access, etc.
 #ifdef _DEBUG
         DWORD nError;
         LPTSTR lpszMessage;
@@ -517,6 +524,10 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
         LocalFree(lpszMessage);
 #endif
         return;
+    }
+    nUsnVolume = 0;
+    if (sDir.ids) {
+        nUsnVolume = UsnSnapshotVolume(lpShot->lpUsnSnapshot, sDir.volumeGuid, sDir.volumeSerial);
     }
     // b) process entry then find next
     do {
@@ -581,15 +592,34 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
         lpFC->nFileSizeHigh = FindData.nFileSizeHigh;
         lpFC->nFileAttributes = FindData.dwFileAttributes;
         if (ISFILE(FindData.dwFileAttributes)) {
-            LPTSTR lpszFullFileName = GetWholeFileName(lpFC, 0);
+            BOOL fCacheable = FALSE;
 
-            lpFC->nChkSumUnknown = !ChecksumFromFile(lpszFullFileName, &lpFC->nChkSum);
-            if (lpFC->nChkSumUnknown) {
-                OutputDebugString(TEXT("Could not hash file: "));
-                OutputDebugString(lpszFullFileName);
-                OutputDebugString(TEXT("\n"));
+            if ((0 != nUsnVolume) && (0 != nFileId)) {
+                ULONGLONG nSize = ((ULONGLONG)FindData.nFileSizeHigh << 32) | FindData.nFileSizeLow;
+                ULONGLONG nWriteTime = ((ULONGLONG)FindData.ftLastWriteTime.dwHighDateTime << 32) | FindData.ftLastWriteTime.dwLowDateTime;
+
+                lpFC->nFileId = nFileId;
+                lpFC->nUsnVolume = nUsnVolume;
+                fCacheable = UsnSnapshotCanCache(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, FindData.dwFileAttributes);
+                if (UsnSnapshotReuseHash(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, nSize, nWriteTime, FindData.dwFileAttributes, &lpFC->nChkSum)) {
+                    lpFC->nChkSumUnknown = FALSE;
+                    lpFC->fUsnFlags |= USNFC_REUSED;
+                }
             }
-            MYFREE(lpszFullFileName);
+            if (!(lpFC->fUsnFlags & USNFC_REUSED)) {
+                LPTSTR lpszFullFileName = GetWholeFileName(lpFC, 0);
+
+                lpFC->nChkSumUnknown = !ChecksumFromFile(lpszFullFileName, &lpFC->nChkSum);
+                if (lpFC->nChkSumUnknown) {
+                    OutputDebugString(TEXT("Could not hash file: "));
+                    OutputDebugString(lpszFullFileName);
+                    OutputDebugString(TEXT("\n"));
+                }
+                MYFREE(lpszFullFileName);
+            }
+            if (fCacheable && !lpFC->nChkSumUnknown) {
+                lpFC->fUsnFlags |= USNFC_CACHEABLE;
+            }
         }
         else {
             lpFC->nChkSumUnknown = TRUE;
@@ -605,10 +635,12 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
         // If the entry is a directory, then do a recursive call for it
         // Pass this entry as father and "lpFirstSubFC" pointer for storing the first child's pointer
         if (ISDIR(lpFC->nFileAttributes)) {
+            lpFC->nFileId = nFileId;
             if (NULL == lpszFullName) {
                 lpszFullName = GetWholeFileName(lpFC, 4);  // +4 for "\*.*" search (in recursive call)
             }
-            GetFilesSnap(lpShot, lpszFullName, lpFC, &lpFC->lpFirstSubFC);
+            GetFilesSnap(lpShot, lpszFullName, lpFC, &lpFC->lpFirstSubFC,
+                (sDir.ids && !(lpFC->nFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) ? &sDir : NULL);
         }
 
         if (NULL != lpszFullName) {
@@ -617,10 +649,175 @@ VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherF
 
         // Set "lpBrotherFC" pointer for storing the next brother's pointer
         lplpCaller = &lpFC->lpBrotherFC;
-    } while (FindNextFile(hFile, &FindData));
-    FindClose(hFile);
+    } while (SnapshotDirNext(&sDir, &FindData, &nFileId));
+    SnapshotDirClose(&sDir);
 }
 
+
+
+// ----------------------------------------------------------------------
+// USN incremental mode helpers
+// ----------------------------------------------------------------------
+#ifdef _WINDOWS
+static LPTSTR GetUsnBaselinePath(VOID)
+{
+    static const TCHAR szBaselineName[] = TEXT("RegshotUsnBaseline.dat");
+    LPTSTR lpszPath;
+    LPTSTR lpszSlash;
+    size_t cchPath;
+
+    if (NULL == lpszRegshotIni) {
+        return NULL;
+    }
+    cchPath = _tcslen(lpszRegshotIni) + _countof(szBaselineName) + 1;
+    lpszPath = MYALLOC0(cchPath * sizeof(TCHAR));
+    if (NULL == lpszPath) {
+        return NULL;
+    }
+    _tcscpy_s(lpszPath, cchPath, lpszRegshotIni);
+    lpszSlash = _tcsrchr(lpszPath, (TCHAR)'\\');
+    if (NULL == lpszSlash) {
+        lpszPath[0] = (TCHAR)'\0';
+    }
+    else {
+        lpszSlash[1] = (TCHAR)'\0';
+    }
+    _tcscat_s(lpszPath, cchPath, szBaselineName);
+    return lpszPath;
+}
+#endif
+
+typedef struct {
+    USN_SNAPSHOT* lpSnapshot;
+    USN_CHANGE_SET* lpLateChanges;
+    BYTE* lpLateState;  // per volume: 0 = not read, 1 = read, 2 = failed
+} USN_VERIFY_CONTEXT;
+
+// Re-hash reused files changed after the volume checkpoint while the scan ran
+static VOID VerifyReusedHashes(USN_VERIFY_CONTEXT* lpContext, LPFILECONTENT lpFC)
+{
+    for (; NULL != lpFC; lpFC = lpFC->lpBrotherFC) {
+        if (lpFC->fUsnFlags & USNFC_REUSED) {
+            DWORD nVolume = lpFC->nUsnVolume;
+            BOOL fRehash = TRUE;
+
+            if ((NULL != lpContext->lpLateChanges) && (NULL != lpContext->lpLateState)
+                && (0 < nVolume) && (USN_BASELINE_MAX_VOLUMES >= nVolume)) {
+                if (0 == lpContext->lpLateState[nVolume - 1]) {
+                    lpContext->lpLateState[nVolume - 1] = UsnSnapshotReadLateChanges(lpContext->lpSnapshot, nVolume, &lpContext->lpLateChanges[nVolume - 1]) ? 1 : 2;
+                }
+                fRehash = (1 != lpContext->lpLateState[nVolume - 1])
+                    || (0 != UsnChangeSetFlags(&lpContext->lpLateChanges[nVolume - 1], lpFC->nFileId));
+            }
+            if (fRehash) {
+                LPTSTR lpszFullFileName = GetWholeFileName(lpFC, 0);
+
+                lpFC->fUsnFlags &= ~USNFC_REUSED;
+                lpFC->nChkSumUnknown = !ChecksumFromFile(lpszFullFileName, &lpFC->nChkSum);
+                if (lpFC->nChkSumUnknown) {
+                    lpFC->fUsnFlags &= ~USNFC_CACHEABLE;
+                }
+                MYFREE(lpszFullFileName);
+            }
+        }
+        if (NULL != lpFC->lpFirstSubFC) {
+            VerifyReusedHashes(lpContext, lpFC->lpFirstSubFC);
+        }
+    }
+}
+
+static VOID FinishUsnScan(LPREGSHOT lpShot)
+{
+    USN_VERIFY_CONTEXT sContext;
+    LPHEADFILE lpHF;
+    DWORD i;
+
+    sContext.lpSnapshot = lpShot->lpUsnSnapshot;
+    sContext.lpLateChanges = MYALLOC0(USN_BASELINE_MAX_VOLUMES * sizeof(USN_CHANGE_SET));
+    sContext.lpLateState = MYALLOC0(USN_BASELINE_MAX_VOLUMES * sizeof(BYTE));
+    for (lpHF = lpShot->lpHF; NULL != lpHF; lpHF = lpHF->lpBrotherHF) {
+        VerifyReusedHashes(&sContext, lpHF->lpFirstFC);
+    }
+    if (NULL != sContext.lpLateChanges) {
+        for (i = 0; i < USN_BASELINE_MAX_VOLUMES; i++) {
+            UsnChangeSetFree(&sContext.lpLateChanges[i]);
+        }
+        MYFREE(sContext.lpLateChanges);
+    }
+    if (NULL != sContext.lpLateState) {
+        MYFREE(sContext.lpLateState);
+    }
+    UsnSnapshotEndScan(lpShot->lpUsnSnapshot);
+}
+
+static DWORD CollectUsnEntries(LPFILECONTENT lpFC, USN_BASELINE_ENTRY* lpEntries, DWORD nCount)
+{
+    for (; NULL != lpFC; lpFC = lpFC->lpBrotherFC) {
+        if ((lpFC->fUsnFlags & USNFC_CACHEABLE) && !lpFC->nChkSumUnknown && (0 != lpFC->nUsnVolume)) {
+            if (NULL != lpEntries) {
+                USN_BASELINE_ENTRY* lpEntry = &lpEntries[nCount];
+
+                lpEntry->fileId = lpFC->nFileId;
+                lpEntry->size = ((ULONGLONG)lpFC->nFileSizeHigh << 32) | lpFC->nFileSizeLow;
+                lpEntry->writeTime = ((ULONGLONG)lpFC->nWriteDateTimeHigh << 32) | lpFC->nWriteDateTimeLow;
+                lpEntry->hash = lpFC->nChkSum;
+                lpEntry->volume = lpFC->nUsnVolume - 1;
+                lpEntry->attributes = lpFC->nFileAttributes;
+            }
+            nCount++;
+        }
+        if (NULL != lpFC->lpFirstSubFC) {
+            nCount = CollectUsnEntries(lpFC->lpFirstSubFC, lpEntries, nCount);
+        }
+    }
+    return nCount;
+}
+
+// ----------------------------------------------------------------------
+// Replace the USN baseline with the saved shot's data, or remove it
+// ----------------------------------------------------------------------
+VOID SaveUsnBaseline(LPREGSHOT lpShot, BOOL fHiveSaved)
+{
+#ifdef _WINDOWS
+    LPTSTR lpszPath;
+    BOOL fSaved = FALSE;
+
+    lpszPath = GetUsnBaselinePath();
+    if (NULL == lpszPath) {
+        return;
+    }
+    if (fHiveSaved && (NULL != lpShot->lpUsnSnapshot)) {
+        USN_BASELINE_ENTRY* lpEntries = NULL;
+        LPHEADFILE lpHF;
+        DWORD nCount = 0;
+
+        for (lpHF = lpShot->lpHF; NULL != lpHF; lpHF = lpHF->lpBrotherHF) {
+            nCount = CollectUsnEntries(lpHF->lpFirstFC, NULL, nCount);
+        }
+        if (0 < nCount) {
+            lpEntries = MYALLOC0(nCount * sizeof(USN_BASELINE_ENTRY));
+        }
+        if ((0 == nCount) || (NULL != lpEntries)) {
+            DWORD nFilled = 0;
+
+            for (lpHF = lpShot->lpHF; NULL != lpHF; lpHF = lpHF->lpBrotherHF) {
+                nFilled = CollectUsnEntries(lpHF->lpFirstFC, lpEntries, nFilled);
+            }
+            fSaved = UsnSnapshotSaveBaseline(lpShot->lpUsnSnapshot, lpEntries, nFilled, lpszPath);
+        }
+        if (NULL != lpEntries) {
+            MYFREE(lpEntries);
+        }
+    }
+    if (!fSaved) {
+        DeleteFile(lpszPath);  // never keep a baseline from an older save
+    }
+    MYFREE(lpszPath);
+#else
+    UNREFERENCED_PARAMETER(lpShot);
+    UNREFERENCED_PARAMETER(fHiveSaved);
+#endif
+}
 
 // ----------------------------------------------------------------------
 // File Shot Engine
@@ -634,6 +831,17 @@ VOID FileShot(LPREGSHOT lpShot)
 #ifdef _CONSOLE
     size_t cchExtDir = 0;
     cchExtDir = _tcslen(lpszExtDir);
+#endif
+
+#ifdef _WINDOWS
+    if ((0 < cchExtDir) && (1 == SendMessage(GetDlgItem(hWnd, IDC_CHECKUSN), BM_GETCHECK, (WPARAM)0, (LPARAM)0))) {
+        LPTSTR lpszBaselinePath = GetUsnBaselinePath();
+
+        lpShot->lpUsnSnapshot = UsnSnapshotBegin(lpszBaselinePath);
+        if (NULL != lpszBaselinePath) {
+            MYFREE(lpszBaselinePath);
+        }
+    }
 #endif
 
     if (0 < cchExtDir) {
@@ -670,12 +878,16 @@ VOID FileShot(LPREGSHOT lpShot)
                     *lplpHFPrev = lpHF;
                     lplpHFPrev = &lpHF->lpBrotherHF;
 
-                    GetFilesSnap(lpShot, lpszSubExtDir, NULL, &lpHF->lpFirstFC);
+                    GetFilesSnap(lpShot, lpszSubExtDir, NULL, &lpHF->lpFirstFC, NULL);
                 }
 
                 lpszSubExtDir = &lpszExtDir[i + 1];
             }
         }
+    }
+
+    if (NULL != lpShot->lpUsnSnapshot) {
+        FinishUsnScan(lpShot);
     }
 }
 

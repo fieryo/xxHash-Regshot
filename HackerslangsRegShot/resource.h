@@ -29,6 +29,7 @@
 #define IDC_RADIO1                      1013
 #define IDC_RADIO2                      1014
 #define IDC_CHECKDIR                    1015
+#define IDC_CHECKUSN                    1059
 
 #define IDC_STATICSERVICE               1016
 #define IDC_STATICRING3                 1017
@@ -80,7 +81,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        120
 #define _APS_NEXT_COMMAND_VALUE         40007
-#define _APS_NEXT_CONTROL_VALUE         1059
+#define _APS_NEXT_CONTROL_VALUE         1060
 #define _APS_NEXT_SYMED_VALUE           102
 #endif
 #endif

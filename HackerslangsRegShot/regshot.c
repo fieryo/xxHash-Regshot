@@ -76,6 +76,7 @@ COMPRESULTS CompareResult;
 DWORD NBW;               // that is: NumberOfBytesWritten
 
 HANDLE   hFileWholeReg;  // Handle of file regshot use
+static BOOL fHiveWriteFailed;  // Any write to hFileWholeReg failed during SaveShot
 FILETIME ftLastWrite;    // Filetime struct
 
 // in regshot.ini, "UseLongRegHead" to control this
@@ -1330,6 +1331,10 @@ VOID FreeShot(LPREGSHOT lpShot)
         FreeAllHeadFiles(lpShot->lpHF);
     }
 
+    if (NULL != lpShot->lpUsnSnapshot) {
+        UsnSnapshotFree(lpShot->lpUsnSnapshot);
+    }
+
     ZeroMemory(lpShot, sizeof(REGSHOT));
 }
 
@@ -1750,7 +1755,9 @@ VOID Shot(LPREGSHOT lpShot)
 VOID EmptyFileBuffer(VOID)
 {
     if ((NULL != lpFileBuffer) && (0 < fileextradata.ofsFBuffer)) {
-        WriteFile(hFileWholeReg, lpFileBuffer, fileextradata.ofsFBuffer, &NBW, NULL);
+        if (!WriteFile(hFileWholeReg, lpFileBuffer, fileextradata.ofsFBuffer, &NBW, NULL) || NBW != fileextradata.ofsFBuffer) {
+            fHiveWriteFailed = TRUE;
+        }
         fileextradata.ofsFBFile += fileextradata.ofsFBuffer;
         fileextradata.ofsFBuffer = 0;
     }
@@ -1786,9 +1793,11 @@ VOID WriteFileBuffer(long ofsFile, LPCVOID lpData, DWORD cbData)
         // Error case: Writing before buffer only allowed if data is not reaching into the buffer / no buffer: behind current file end
         assert((ofsFile + (long)cbData) <= (long)fileextradata.ofsFBFile);
 
-        SetFilePointer(hFileWholeReg, ofsFileDW, NULL, FILE_BEGIN);
-        WriteFile(hFileWholeReg, lpData, cbData, &NBW, NULL);
-        SetFilePointer(hFileWholeReg, fileextradata.ofsFBFile, NULL, FILE_BEGIN);
+        if ((INVALID_SET_FILE_POINTER == SetFilePointer(hFileWholeReg, ofsFileDW, NULL, FILE_BEGIN))
+            || !WriteFile(hFileWholeReg, lpData, cbData, &NBW, NULL) || NBW != cbData
+            || (INVALID_SET_FILE_POINTER == SetFilePointer(hFileWholeReg, fileextradata.ofsFBFile, NULL, FILE_BEGIN))) {
+            fHiveWriteFailed = TRUE;
+        }
         return;
     }
 
@@ -1843,7 +1852,9 @@ VOID WriteFileBuffer(long ofsFile, LPCVOID lpData, DWORD cbData)
     }
 
     // Fallback: direct append (e.g. no buffer or buffer too small)
-    WriteFile(hFileWholeReg, lpData, cbData, &NBW, NULL);
+    if (!WriteFile(hFileWholeReg, lpData, cbData, &NBW, NULL) || NBW != cbData) {
+        fHiveWriteFailed = TRUE;
+    }
     fileextradata.ofsFBFile += cbData;
 }
 
@@ -2094,6 +2105,7 @@ VOID SaveShot(LPREGSHOT lpShot)
             ErrMsg(asLangTexts[iszTextErrorCreateFile].lpszText);
             return;
         }
+        fHiveWriteFailed = FALSE;
 
         // Setup GUI for saving...
         cEnd = lpShot->stCounts.cAll;
@@ -2231,7 +2243,13 @@ VOID SaveShot(LPREGSHOT lpShot)
 
         // Close file
         EmptyFileBuffer();
-        CloseHandle(hFileWholeReg);
+        if (!CloseHandle(hFileWholeReg)) {
+            fHiveWriteFailed = TRUE;
+        }
+#ifdef _WINDOWS
+        // The most recently saved shot becomes the USN baseline, only if fully written
+        SaveUsnBaseline(lpShot, !fHiveWriteFailed);
+#endif
 
         if (NULL != lpFileBuffer) {
             MYFREE(lpFileBuffer);

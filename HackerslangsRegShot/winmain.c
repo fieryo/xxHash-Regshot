@@ -370,10 +370,12 @@ BOOL CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             if (SendMessage(GetDlgItem(hDlg, IDC_CHECKDIR), BM_GETCHECK, (WPARAM)0, (LPARAM)0) == 1) {
                 EnableWindow(GetDlgItem(hDlg, IDC_EDITDIR), TRUE);
                 EnableWindow(GetDlgItem(hDlg, IDC_BROWSE1), TRUE);
+                EnableWindow(GetDlgItem(hDlg, IDC_CHECKUSN), TRUE);
             }
             else {
                 EnableWindow(GetDlgItem(hDlg, IDC_EDITDIR), FALSE);
                 EnableWindow(GetDlgItem(hDlg, IDC_BROWSE1), FALSE);
+                EnableWindow(GetDlgItem(hDlg, IDC_CHECKUSN), FALSE);
             }
             return(TRUE);
 
