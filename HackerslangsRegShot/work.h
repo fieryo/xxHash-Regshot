@@ -24,5 +24,6 @@ typedef struct {
 } WorkerData;
 
 DWORD WINAPI WorkerThreadProc(LPVOID lpParam);
-
+VOID CreateWorkerThread(HWND hWnd, unsigned int hFunc, void* funcArgs, HANDLE hCancelEvent);
+DWORD DoShotOnly(WorkerData* data);
 DWORD DoShotSave(WorkerData* data);
