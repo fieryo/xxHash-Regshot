@@ -1,43 +1,4 @@
 #include "../HackerslangsRegShot/common.h"
-#include <dbghelp.h>
-
-static LONG WINAPI TestCrash(EXCEPTION_POINTERS* exception)
-{
-    STACKFRAME64 frame = { 0 };
-    DWORD machine;
-    HANDLE process = GetCurrentProcess();
-    SYMBOL_INFO* symbol = calloc(1, sizeof(SYMBOL_INFO) + MAX_SYM_NAME);
-    unsigned i;
-
-#ifdef _WIN64
-    machine = IMAGE_FILE_MACHINE_AMD64;
-    frame.AddrPC.Offset = exception->ContextRecord->Rip;
-    frame.AddrFrame.Offset = exception->ContextRecord->Rbp;
-    frame.AddrStack.Offset = exception->ContextRecord->Rsp;
-#else
-    machine = IMAGE_FILE_MACHINE_I386;
-    frame.AddrPC.Offset = exception->ContextRecord->Eip;
-    frame.AddrFrame.Offset = exception->ContextRecord->Ebp;
-    frame.AddrStack.Offset = exception->ContextRecord->Esp;
-#endif
-    frame.AddrPC.Mode = frame.AddrFrame.Mode = frame.AddrStack.Mode = AddrModeFlat;
-    printf("Exception 0x%08lX at %p\n", exception->ExceptionRecord->ExceptionCode,
-        exception->ExceptionRecord->ExceptionAddress);
-    if (symbol != NULL && SymInitialize(process, NULL, TRUE)) {
-        symbol->SizeOfStruct = sizeof(*symbol);
-        symbol->MaxNameLen = MAX_SYM_NAME;
-        for (i = 0; i < 12; ++i) {
-            DWORD64 displacement;
-            if (SymFromAddr(process, frame.AddrPC.Offset, &displacement, symbol))
-                printf("  %s + %llu\n", symbol->Name, (unsigned long long)displacement);
-            if (!StackWalk64(machine, process, GetCurrentThread(), &frame,
-                exception->ContextRecord, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
-                break;
-        }
-    }
-    free(symbol);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
 
 static int valueCalls;
 static BOOL keepGrowing;
@@ -454,13 +415,15 @@ int main(void)
 {
     TCHAR message[REGSHOT_MESSAGE_LENGTH];
     TCHAR dirs[EXTDIRLEN], openDir[MAX_PATH];
+    LPTSTR noSkips[] = { NULL };
 
     hHeap = GetProcessHeap();
     setvbuf(stdout, NULL, _IONBF, 0);
-    SetUnhandledExceptionFilter(TestCrash);
     lpszMessage = message;
     lpszExtDir = dirs;
     lpszLastOpenDir = openDir;
+    lprgszRegSkipStrings = noSkips;
+    lprgszFileSkipStrings = noSkips;
     SetTextsToDefaultLanguage();
     nLastTime = GetTickCount();
     puts("Testing registry formatting");
