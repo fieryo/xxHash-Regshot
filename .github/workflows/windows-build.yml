@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      registry_profile:
+        description: Profile full registry capture (counts and timings only)
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -21,6 +26,8 @@ jobs:
         run: msbuild HackerslangsRegShot/HackerslangsRegShot.vcxproj /m /p:Configuration=Release /p:Platform=${{ matrix.platform }} /p:PlatformToolset=v143
       - name: Test checksums
         shell: cmd
+        env:
+          REGSHOT_BENCHMARK_REGISTRY: ${{ inputs.registry_profile && '1' || '0' }}
         run: tests\run-checksum-test.cmd
       - name: Upload Windows x64 executable
         if: matrix.platform == 'x64'

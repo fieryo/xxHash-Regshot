@@ -15,6 +15,25 @@ static HKEY registryRoot, queryDeniedKey;
 static int keyCalls;
 static BOOL keepKeyGrowing;
 static size_t nameComparisons;
+static BOOL profileRegistry;
+typedef struct {
+    ULONGLONG calls;
+    LONGLONG ticks;
+} REGISTRY_PROFILE;
+static REGISTRY_PROFILE profileOpen, profileClose, profileInfo, profileValues, profileKeys, profileAlloc;
+
+#define PROFILE_REGISTRY_RETURN(profile, call) do { \
+    LARGE_INTEGER start, end; \
+    LONG profileResult; \
+    if (!profileRegistry) \
+        return (call); \
+    QueryPerformanceCounter(&start); \
+    profileResult = (call); \
+    QueryPerformanceCounter(&end); \
+    ++(profile).calls; \
+    (profile).ticks += end.QuadPart - start.QuadPart; \
+    return profileResult; \
+} while (0)
 
 static int CountNameCompare(LPCTSTR left, LPCTSTR right)
 {
@@ -24,11 +43,21 @@ static int CountNameCompare(LPCTSTR left, LPCTSTR right)
 
 static LPVOID WINAPI FakeHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
 {
+    LARGE_INTEGER start, end;
+    LPVOID result;
+
     if (failAllocationAfter == 0)
         return NULL;
     if (failAllocationAfter > 0)
         --failAllocationAfter;
-    return HeapAlloc(heap, flags, size);
+    if (!profileRegistry)
+        return HeapAlloc(heap, flags, size);
+    QueryPerformanceCounter(&start);
+    result = HeapAlloc(heap, flags, size);
+    QueryPerformanceCounter(&end);
+    ++profileAlloc.calls;
+    profileAlloc.ticks += end.QuadPart - start.QuadPart;
+    return result;
 }
 
 static BOOL WINAPI FakeReadFile(HANDLE file, LPVOID data, DWORD size, LPDWORD read, LPOVERLAPPED overlapped)
@@ -68,8 +97,10 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 {
     (void)key;
     (void)reserved;
-    if (!retryValue)
-        return RegEnumValue(key, index, name, length, reserved, type, data, size);
+    if (!retryValue) {
+        PROFILE_REGISTRY_RETURN(profileValues,
+            RegEnumValue(key, index, name, length, reserved, type, data, size));
+    }
     assert(index == 7);
     if (++valueCalls == 1)
         firstValueDataSize = *size;
@@ -92,6 +123,9 @@ static LONG WINAPI FakeRegOpenKeyEx(HKEY key, LPCTSTR name, DWORD options, REGSA
 
     if (registryMode == 1 && _tcscmp(name, TEXT("DRIVERS")) == 0)
         return ERROR_ACCESS_DENIED;
+    if (profileRegistry) {
+        PROFILE_REGISTRY_RETURN(profileOpen, RegOpenKeyEx(key, name, options, access, result));
+    }
     error = RegOpenKeyEx(key, name, options, access, result);
     if (registryMode == 2 && error == ERROR_SUCCESS && _tcscmp(name, TEXT("DRIVERS")) == 0)
         queryDeniedKey = *result;
@@ -106,8 +140,9 @@ static LONG WINAPI FakeRegQueryInfoKey(HKEY key, LPTSTR className, LPDWORD class
         queryDeniedKey = NULL;
         return ERROR_ACCESS_DENIED;
     }
-    return RegQueryInfoKey(key, className, classLength, reserved, subKeys, maxSubKey, maxClass,
-        values, maxValueName, maxData, security, writeTime);
+    PROFILE_REGISTRY_RETURN(profileInfo,
+        RegQueryInfoKey(key, className, classLength, reserved, subKeys, maxSubKey, maxClass,
+            values, maxValueName, maxData, security, writeTime));
 }
 
 static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD length,
@@ -124,7 +159,13 @@ static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD 
         *length = 8;
         return ERROR_SUCCESS;
     }
-    return RegEnumKeyEx(key, index, name, length, reserved, className, classLength, writeTime);
+    PROFILE_REGISTRY_RETURN(profileKeys,
+        RegEnumKeyEx(key, index, name, length, reserved, className, classLength, writeTime));
+}
+
+static LONG WINAPI ProfileRegCloseKey(HKEY key)
+{
+    PROFILE_REGISTRY_RETURN(profileClose, RegCloseKey(key));
 }
 
 #undef RegEnumValue
@@ -135,6 +176,7 @@ static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 #define RegOpenKeyEx FakeRegOpenKeyEx
 #undef RegQueryInfoKey
 #define RegQueryInfoKey FakeRegQueryInfoKey
+#define RegCloseKey ProfileRegCloseKey
 #undef _tcsicmp
 #define _tcsicmp CountNameCompare
 #undef GetOpenFileName
@@ -973,7 +1015,60 @@ static void TestBaselinePermissions(void)
     assert(DeleteFile(path));
 }
 
-int main(void)
+static void PrintRegistryProfile(const char* label, REGISTRY_PROFILE* profile, LONGLONG frequency)
+{
+    printf("%-18s %10llu calls %10.3f seconds\n",
+        label, profile->calls, (double)profile->ticks / (double)frequency);
+}
+
+static int BenchmarkRegistry(void)
+{
+    REGSHOT shot = { 0 };
+    LARGE_INTEGER frequency, start, end;
+    LPTSTR paths[] = { TEXT("HKLM"), TEXT("HKU") };
+    HKEY roots[] = { HKEY_LOCAL_MACHINE, HKEY_USERS };
+    size_t i;
+
+    assert(QueryPerformanceFrequency(&frequency));
+    puts("Registry profile: full capture, no skip list; counts and timings only.");
+    puts("Registry contents are not printed or saved.");
+    profileRegistry = TRUE;
+    QueryPerformanceCounter(&start);
+    for (i = 0; i < _countof(roots); ++i) {
+        REGSHOT part = { 0 };
+        LARGE_INTEGER partStart, partEnd;
+
+        QueryPerformanceCounter(&partStart);
+        GetRegistrySnap(&part, roots[i], i == 0 ? lpszHKLMShort : lpszHKUShort,
+            NULL, i == 0 ? &shot.lpHKLM : &shot.lpHKU);
+        QueryPerformanceCounter(&partEnd);
+        _tprintf(TEXT("%s: keys=%lu values=%lu unavailable=%lu incomplete=%u time=%.3fs\n"),
+            paths[i], part.stCounts.cKeys, part.stCounts.cValues, part.cSkippedRegKeys,
+            part.fIncomplete, (double)(partEnd.QuadPart - partStart.QuadPart) / (double)frequency.QuadPart);
+        shot.fIncomplete |= part.fIncomplete;
+    }
+    QueryPerformanceCounter(&end);
+    profileRegistry = FALSE;
+    printf("Total capture: %.3f seconds\n", (double)(end.QuadPart - start.QuadPart) / (double)frequency.QuadPart);
+    PrintRegistryProfile("RegOpenKeyEx", &profileOpen, frequency.QuadPart);
+    PrintRegistryProfile("RegCloseKey", &profileClose, frequency.QuadPart);
+    PrintRegistryProfile("RegQueryInfoKey", &profileInfo, frequency.QuadPart);
+    PrintRegistryProfile("RegEnumValue", &profileValues, frequency.QuadPart);
+    PrintRegistryProfile("RegEnumKeyEx", &profileKeys, frequency.QuadPart);
+    PrintRegistryProfile("HeapAlloc", &profileAlloc, frequency.QuadPart);
+    {
+        BOOL incomplete = shot.fIncomplete;
+
+        FreeShot(&shot);
+        MYFREE(lpStringBuffer);
+        MYFREE(lpDataBuffer);
+        lpStringBuffer = NULL;
+        lpDataBuffer = NULL;
+        return incomplete ? 1 : 0;
+    }
+}
+
+int main(int argc, char** argv)
 {
     TCHAR message[REGSHOT_MESSAGE_LENGTH];
     TCHAR dirs[EXTDIRLEN], openDir[MAX_PATH], saveDir[MAX_PATH];
@@ -989,6 +1084,8 @@ int main(void)
     lprgszFileSkipStrings = noSkips;
     SetTextsToDefaultLanguage();
     nLastTime = GetTickCount();
+    if (argc == 2 && strcmp(argv[1], "--benchmark-registry") == 0)
+        return BenchmarkRegistry();
     puts("Testing registry formatting");
     TestRegistryFormatting();
     puts("Testing value growth");
