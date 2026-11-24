@@ -3,6 +3,7 @@ name: Windows build
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,3 +22,10 @@ jobs:
       - name: Test checksums
         shell: cmd
         run: tests\run-checksum-test.cmd
+      - name: Upload Windows x64 executable
+        if: matrix.platform == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: xxHash-Regshot-windows-x64
+          path: HackerslangsRegShot/x64/Release/HackerslangsRegShot.exe
+          if-no-files-found: error

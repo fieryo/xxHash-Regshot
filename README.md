@@ -13,6 +13,12 @@ Windows debugger output and likewise leave the hash unknown.
 xxHash is distributed under the BSD 2-Clause license; see
 `HackerslangsRegShot/third_party/xxhash/LICENSE`.
 
+## Windows x64 build
+
+The Windows build workflow runs on pushes, pull requests, or manually from
+the Actions tab. Download the `xxHash-Regshot-windows-x64` artifact from a
+successful run to get `HackerslangsRegShot.exe`.
+
 Run `tests\run-checksum-test.cmd` from a Visual Studio Developer Command
 Prompt to test empty, binary, multi-buffer, and unreadable file hashing,
 directory enumeration fallback behavior, USN journal reading, and USN
