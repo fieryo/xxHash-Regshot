@@ -30,7 +30,7 @@ usnbaseline_test.exe
 set result=%errorlevel%
 del /q usnbaseline_test.exe usnbaseline_test.obj usnbaseline.obj xxhash.obj
 if not "%result%"=="0" exit /b %result%
-cl /nologo /W4 /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
+cl /nologo /W4 /Zi /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
   snapshot_logic_test.c ^
   ..\HackerslangsRegShot\checksum.c ..\HackerslangsRegShot\fileenum.c ^
   ..\HackerslangsRegShot\language.c ..\HackerslangsRegShot\misc.c ^
@@ -39,7 +39,7 @@ cl /nologo /W4 /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
   ..\HackerslangsRegShot\usn.c ..\HackerslangsRegShot\usnbaseline.c ^
   ..\HackerslangsRegShot\third_party\xxhash\xxhash.c ^
   ..\HackerslangsRegShot\third_party\xxhash\xxh_x86dispatch.c ^
-  /link advapi32.lib user32.lib shell32.lib comdlg32.lib gdi32.lib
+  /link /DEBUG advapi32.lib user32.lib shell32.lib comdlg32.lib gdi32.lib dbghelp.lib
 if errorlevel 1 exit /b 1
 snapshot_logic_test.exe
 set result=%errorlevel%
