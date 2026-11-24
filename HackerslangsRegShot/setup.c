@@ -133,16 +133,13 @@ BOOL LoadSettingsFromIni(HWND hDlg) // tfx get ini info
 #endif
 
     // Scan Dirs
-    if (0 != GetPrivateProfileString(lpszIniSetup, lpszIniExtDir, NULL, lpszExtDir, MAX_PATH, lpszRegshotIni)) {  // length incl. NULL character
-#ifdef _WINDOWS
-        SetDlgItemText(hDlg, IDC_EDITDIR, lpszExtDir);
-#endif
+    GetPrivateProfileString(lpszIniSetup, lpszIniExtDir, TEXT("C:\\"), lpszExtDir, EXTDIRLEN, lpszRegshotIni);
+    if (lpszExtDir[0] == (TCHAR)'\0') {
+        _tcscpy_s(lpszExtDir, EXTDIRLEN, TEXT("C:\\"));
     }
-    else {
 #ifdef _WINDOWS
-        SetDlgItemText(hDlg, IDC_EDITDIR, lpszWindowsDirName);
+    SetDlgItemText(hDlg, IDC_EDITDIR, lpszExtDir);
 #endif
-    }
 #ifdef _CONSOLE
     _tprintf(_T("\t%-30s : \"%s\"\n"), _T("Dirs to scan"), lpszExtDir);
 #endif

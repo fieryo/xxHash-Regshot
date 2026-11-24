@@ -1773,6 +1773,18 @@ VOID Shot(LPREGSHOT lpShot)
     lpShot->fLoaded = FALSE;
 
     UI_ShowHideCounters(SW_HIDE);
+    if (lpShot->cSkippedDirs != 0) {
+        TCHAR warning[384];
+
+        _sntprintf_s(warning, _countof(warning), _TRUNCATE,
+            asLangTexts[iszTextScanWarning].lpszText,
+            lpShot->cSkippedDirs);
+#ifdef _WINDOWS
+        MessageBox(hWnd, warning, asLangTexts[iszTextWarning].lpszText, MB_OK | MB_ICONWARNING);
+#else
+        _tprintf(TEXT("%s\n"), warning);
+#endif
+    }
 
 cleanupShotBuffers:
     if (NULL != lpStringBuffer) {
@@ -2132,6 +2144,8 @@ VOID SaveShot(LPREGSHOT lpShot)
 
         // Display Save File Name dialog
         if (!GetSaveFileName(&opfn)) {
+            if (CommDlgExtendedError() != 0)
+                ErrMsg(TEXT("The save dialog could not be opened. The snapshot remains in memory; retry Save."));
             return;  // leave silently
         }
 
@@ -2303,6 +2317,10 @@ VOID SaveShot(LPREGSHOT lpShot)
         }
 
         UI_ShowHideProgressBar(SW_HIDE);
+
+        if (fHiveWriteFailed) {
+            ErrMsg(TEXT("The snapshot could not be fully written. The saved file is incomplete; check free space and retry Save."));
+        }
 
 #ifdef _WINDOWS
         // overwrite first letter of file name with NULL character to get path only, then create backup for initialization on next call
@@ -2693,6 +2711,8 @@ VOID SaveShot(LPREGSHOT lpShot)
             memcpy(&file, hive->data + offset, hive->header->nFCSize);
             if (!HiveString(hive, file.ofsFileName, file.nFileNameLen,
                     hive->header->nFCVersion < FILECONTENT_VERSION_2, TRUE)
+                || (file.nScanError != 0
+                    && (!(file.nFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || file.ofsFirstSubFile != 0))
                 || !ValidateHiveFiles(hive, file.ofsFirstSubFile, depth + 1))
                 return FALSE;
             offset = file.ofsBrotherFile;
@@ -2720,7 +2740,8 @@ VOID SaveShot(LPREGSHOT lpShot)
             || header->nVCSize != (header->nVCVersion < 2 ? offsetof(SAVEVALUECONTENT, nValueNameLen) : sizeof(SAVEVALUECONTENT))
             || header->nHFSize != sizeof(SAVEHEADFILE)
             || header->nFCSize != (header->nFCVersion < 2 ? offsetof(SAVEFILECONTENT, nFileNameLen)
-                : header->nFCVersion < 3 ? offsetof(SAVEFILECONTENT, nHashLow) : sizeof(SAVEFILECONTENT)))
+                : header->nFCVersion < 3 ? offsetof(SAVEFILECONTENT, nHashLow)
+                : header->nFCVersion < 4 ? offsetof(SAVEFILECONTENT, nScanError) : sizeof(SAVEFILECONTENT)))
             return FALSE;
         hive.data = data;
         hive.size = size;
@@ -3249,7 +3270,7 @@ loadAllocationFailed:
         }
 
         lpszInfoBox = MYALLOC0(SIZEOF_INFOBOX * sizeof(TCHAR));
-        _sntprintf_s(lpszInfoBox, SIZEOF_INFOBOX, SIZEOF_INFOBOX, TEXT("%s %04d-%02d-%02d %02d:%02d:%02d\n%s %s\n%s %s\n%s %u\n%s %u\n%s %u\n%s %u\n%s\0"),
+        _sntprintf_s(lpszInfoBox, SIZEOF_INFOBOX, SIZEOF_INFOBOX, TEXT("%s %04d-%02d-%02d %02d:%02d:%02d\n%s %s\n%s %s\n%s %u\n%s %u\n%s %u\n%s %u\n%s %lu\n%s\0"),
             asLangTexts[iszTextDateTime].lpszText,
             lpShot->systemtime.wYear, lpShot->systemtime.wMonth, lpShot->systemtime.wDay,
             lpShot->systemtime.wHour, lpShot->systemtime.wMinute, lpShot->systemtime.wSecond,
@@ -3259,6 +3280,7 @@ loadAllocationFailed:
             asLangTexts[iszTextValue].lpszText, lpShot->stCounts.cValues,
             asLangTexts[iszTextDir].lpszText, lpShot->stCounts.cDirs,
             asLangTexts[iszTextFile].lpszText, lpShot->stCounts.cFiles,
+            asLangTexts[iszTextUnscannedDirs].lpszText, lpShot->cSkippedDirs,
             lpszLoaded
         );
         lpszInfoBox[SIZEOF_INFOBOX - 1] = (TCHAR)'\0';  // safety NULL char

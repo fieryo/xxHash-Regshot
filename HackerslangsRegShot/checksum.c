@@ -22,7 +22,8 @@ static BOOL CALLBACK InitializeHashDispatch(PINIT_ONCE once, PVOID parameter, PV
 
 BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum)
 {
-    unsigned char buffer[64 * 1024];
+    unsigned char buffer[256 * 1024];
+    unsigned char next;
     XXH3_state_t* state;
     HANDLE file;
     DWORD bytesRead;
@@ -38,12 +39,31 @@ BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum)
         CloseHandle(file);
         return FALSE;
     }
+    if (!ReadFile(file, buffer, sizeof(buffer), &bytesRead, NULL)) {
+        CloseHandle(file);
+        return FALSE;
+    }
+    {
+        DWORD extra;
+
+        if (!ReadFile(file, &next, 1, &extra, NULL)) {
+            CloseHandle(file);
+            return FALSE;
+        }
+        if (extra == 0) {
+            *checksum = (QWORD)XXH3_64bits(buffer, bytesRead);
+            CloseHandle(file);
+            return TRUE;
+        }
+    }
     state = XXH3_createState();
     if (state == NULL) {
         CloseHandle(file);
         return FALSE;
     }
-    if (XXH3_64bits_reset(state) == XXH_OK) {
+    if (XXH3_64bits_reset(state) == XXH_OK
+        && XXH3_64bits_update(state, buffer, bytesRead) == XXH_OK
+        && XXH3_64bits_update(state, &next, 1) == XXH_OK) {
         while (ReadFile(file, buffer, sizeof(buffer), &bytesRead, NULL)) {
             if (bytesRead == 0) {
                 *checksum = (QWORD)XXH3_64bits_digest(state);

@@ -23,7 +23,7 @@ int main(void)
 {
     TCHAR directory[MAX_PATH];
     TCHAR path[MAX_PATH];
-    unsigned char data[65539];
+    static unsigned char data[2 * 256 * 1024 + 19];
     DWORD i;
     QWORD hash;
     int ok;
@@ -38,7 +38,19 @@ int main(void)
         && TestSize(path, data, 1)
         && TestSize(path, data, 7)
         && TestSize(path, data, 65536)
+        && TestSize(path, data, 256 * 1024 - 1)
+        && TestSize(path, data, 256 * 1024)
+        && TestSize(path, data, 256 * 1024 + 1)
         && TestSize(path, data, sizeof(data));
+    {
+        HANDLE locked = CreateFile(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+
+        if (locked == INVALID_HANDLE_VALUE)
+            return 1;
+        hash = 123;
+        ok = ok && !ChecksumFromFile(path, &hash) && hash == 123;
+        CloseHandle(locked);
+    }
     if (!DeleteFile(path)) {
         return 1;
     }
