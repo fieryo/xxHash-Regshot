@@ -45,7 +45,13 @@ snapshot_logic_test.exe
 set result=%errorlevel%
 if not "%result%"=="0" exit /b %result%
 if "%REGSHOT_BENCHMARK_REGISTRY%"=="1" (
+  snapshot_logic_test.exe --benchmark-registry-legacy-capacity
+  if errorlevel 1 exit /b 1
   snapshot_logic_test.exe --benchmark-registry
+  if errorlevel 1 exit /b 1
+  snapshot_logic_test.exe --benchmark-registry
+  if errorlevel 1 exit /b 1
+  snapshot_logic_test.exe --benchmark-registry-legacy-capacity
   if errorlevel 1 exit /b 1
 )
 del /q snapshot_logic_test.exe snapshot_logic_test.obj checksum.obj fileenum.obj language.obj misc.obj ^

@@ -27,7 +27,7 @@ jobs:
       - name: Test checksums
         shell: cmd
         env:
-          REGSHOT_BENCHMARK_REGISTRY: ${{ inputs.registry_profile && '1' || '0' }}
+          REGSHOT_BENCHMARK_REGISTRY: ${{ inputs.registry_profile && matrix.platform == 'x64' && '1' || '0' }}
         run: tests\run-checksum-test.cmd
       - name: Upload Windows x64 executable
         if: matrix.platform == 'x64'

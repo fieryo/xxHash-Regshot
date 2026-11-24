@@ -1,5 +1,6 @@
 #include "../HackerslangsRegShot/common.h"
 
+extern size_t nDataBufferSize;
 static int valueCalls;
 static DWORD firstValueDataSize;
 static BOOL keepGrowing;
@@ -16,6 +17,9 @@ static int keyCalls;
 static BOOL keepKeyGrowing;
 static size_t nameComparisons;
 static BOOL profileRegistry;
+static BOOL profileLegacyCapacity;
+static ULONGLONG profileDataBytes;
+static DWORD profileMaxDataCapacity;
 typedef struct {
     ULONGLONG calls;
     LONGLONG ticks;
@@ -98,6 +102,13 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
     (void)key;
     (void)reserved;
     if (!retryValue) {
+        if (profileRegistry) {
+            if (profileLegacyCapacity)
+                *size = (DWORD)nDataBufferSize;
+            profileDataBytes += *size;
+            if (*size > profileMaxDataCapacity)
+                profileMaxDataCapacity = *size;
+        }
         PROFILE_REGISTRY_RETURN(profileValues,
             RegEnumValue(key, index, name, length, reserved, type, data, size));
     }
@@ -1030,7 +1041,8 @@ static int BenchmarkRegistry(void)
     size_t i;
 
     assert(QueryPerformanceFrequency(&frequency));
-    puts("Registry profile: full capture, no skip list; counts and timings only.");
+    printf("Registry profile: %s buffer capacity; full capture, no skip list; counts and timings only.\n",
+        profileLegacyCapacity ? "legacy shared" : "per-key");
     puts("Registry contents are not printed or saved.");
     profileRegistry = TRUE;
     QueryPerformanceCounter(&start);
@@ -1056,6 +1068,9 @@ static int BenchmarkRegistry(void)
     PrintRegistryProfile("RegEnumValue", &profileValues, frequency.QuadPart);
     PrintRegistryProfile("RegEnumKeyEx", &profileKeys, frequency.QuadPart);
     PrintRegistryProfile("HeapAlloc", &profileAlloc, frequency.QuadPart);
+    printf("RegEnumValue mean offered data capacity: %.0f bytes; maximum: %lu bytes\n",
+        profileValues.calls != 0 ? (double)profileDataBytes / (double)profileValues.calls : 0,
+        profileMaxDataCapacity);
     {
         BOOL incomplete = shot.fIncomplete;
 
@@ -1084,6 +1099,10 @@ int main(int argc, char** argv)
     lprgszFileSkipStrings = noSkips;
     SetTextsToDefaultLanguage();
     nLastTime = GetTickCount();
+    if (argc == 2 && strcmp(argv[1], "--benchmark-registry-legacy-capacity") == 0) {
+        profileLegacyCapacity = TRUE;
+        return BenchmarkRegistry();
+    }
     if (argc == 2 && strcmp(argv[1], "--benchmark-registry") == 0)
         return BenchmarkRegistry();
     puts("Testing registry formatting");
