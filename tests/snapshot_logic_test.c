@@ -8,6 +8,18 @@ static int readCalls;
 static TCHAR hivePath[MAX_PATH];
 static int loadErrors;
 static BOOL failHiveWrite;
+static BOOL retryValue;
+static int registryMode;
+static HKEY registryRoot, queryDeniedKey;
+static int keyCalls;
+static BOOL keepKeyGrowing;
+static size_t nameComparisons;
+
+static int CountNameCompare(LPCTSTR left, LPCTSTR right)
+{
+    ++nameComparisons;
+    return _tcsicmp(left, right);
+}
 
 static LPVOID WINAPI FakeHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
 {
@@ -55,6 +67,8 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
 {
     (void)key;
     (void)reserved;
+    if (!retryValue)
+        return RegEnumValue(key, index, name, length, reserved, type, data, size);
     assert(index == 7);
     ++valueCalls;
     if (valueCalls == 1 || keepGrowing) {
@@ -70,8 +84,57 @@ static LONG WINAPI FakeRegEnumValue(HKEY key, DWORD index, LPTSTR name, LPDWORD 
     return ERROR_SUCCESS;
 }
 
+static LONG WINAPI FakeRegOpenKeyEx(HKEY key, LPCTSTR name, DWORD options, REGSAM access, PHKEY result)
+{
+    LONG error;
+
+    if (registryMode == 1 && _tcscmp(name, TEXT("DRIVERS")) == 0)
+        return ERROR_ACCESS_DENIED;
+    error = RegOpenKeyEx(key, name, options, access, result);
+    if (registryMode == 2 && error == ERROR_SUCCESS && _tcscmp(name, TEXT("DRIVERS")) == 0)
+        queryDeniedKey = *result;
+    return error;
+}
+
+static LONG WINAPI FakeRegQueryInfoKey(HKEY key, LPTSTR className, LPDWORD classLength,
+    LPDWORD reserved, LPDWORD subKeys, LPDWORD maxSubKey, LPDWORD maxClass,
+    LPDWORD values, LPDWORD maxValueName, LPDWORD maxData, LPDWORD security, PFILETIME writeTime)
+{
+    if (registryMode == 2 && key == queryDeniedKey) {
+        queryDeniedKey = NULL;
+        return ERROR_ACCESS_DENIED;
+    }
+    return RegQueryInfoKey(key, className, classLength, reserved, subKeys, maxSubKey, maxClass,
+        values, maxValueName, maxData, security, writeTime);
+}
+
+static LONG WINAPI FakeRegEnumKeyEx(HKEY key, DWORD index, LPTSTR name, LPDWORD length,
+    LPDWORD reserved, LPTSTR className, LPDWORD classLength, PFILETIME writeTime)
+{
+    if (registryMode == 3 && key == registryRoot && index == 1)
+        return ERROR_ACCESS_DENIED;
+    if (registryMode == 4) {
+        assert(index == 7);
+        ++keyCalls;
+        if (keyCalls == 1 || keepKeyGrowing)
+            return ERROR_MORE_DATA;
+        _tcscpy_s(name, *length, TEXT("long-key"));
+        *length = 8;
+        return ERROR_SUCCESS;
+    }
+    return RegEnumKeyEx(key, index, name, length, reserved, className, classLength, writeTime);
+}
+
 #undef RegEnumValue
 #define RegEnumValue FakeRegEnumValue
+#undef RegEnumKeyEx
+#define RegEnumKeyEx FakeRegEnumKeyEx
+#undef RegOpenKeyEx
+#define RegOpenKeyEx FakeRegOpenKeyEx
+#undef RegQueryInfoKey
+#define RegQueryInfoKey FakeRegQueryInfoKey
+#undef _tcsicmp
+#define _tcsicmp CountNameCompare
 #undef GetOpenFileName
 #define GetOpenFileName FakeOpenFileName
 #undef GetSaveFileName
@@ -188,6 +251,7 @@ static void TestValueRetry(void)
 {
     DWORD nameLength, type, dataLength;
 
+    retryValue = TRUE;
     nStringBufferSize = sizeof(TCHAR);
     lpStringBuffer = MYALLOC(nStringBufferSize);
     nDataBufferSize = 1;
@@ -202,6 +266,184 @@ static void TestValueRetry(void)
     MYFREE(lpDataBuffer);
     lpStringBuffer = NULL;
     lpDataBuffer = NULL;
+    retryValue = FALSE;
+}
+
+static void TestKeyRetry(void)
+{
+    DWORD length;
+
+    registryMode = 4;
+    nStringBufferSize = sizeof(TCHAR);
+    lpStringBuffer = MYALLOC(nStringBufferSize);
+    assert(EnumerateSnapshotKey(NULL, 7, &length) == ERROR_SUCCESS);
+    assert(keyCalls == 2 && length == 8);
+    keyCalls = 0;
+    keepKeyGrowing = TRUE;
+    assert(EnumerateSnapshotKey(NULL, 7, &length) == ERROR_MORE_DATA);
+    assert(keyCalls == 9);
+    MYFREE(lpStringBuffer);
+    lpStringBuffer = NULL;
+    registryMode = 0;
+}
+
+static void TestRegistryAvailability(void)
+{
+    TCHAR temp[MAX_PATH], unique[MAX_PATH], path[MAX_PATH];
+    HKEY drivers, child, visible;
+    REGSHOT before = { 0 }, after = { 0 };
+    DWORD data = 1;
+    int mode;
+
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, unique));
+    assert(DeleteFile(unique));
+    _tcscpy_s(path, _countof(path), TEXT("Software\\RegshotTest-"));
+    _tcscat_s(path, _countof(path), _tcsrchr(unique, (TCHAR)'\\') + 1);
+    assert(RegCreateKeyEx(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL,
+        &registryRoot, NULL) == ERROR_SUCCESS);
+    assert(RegCreateKeyEx(registryRoot, TEXT("DRIVERS"), 0, NULL, 0, KEY_ALL_ACCESS, NULL,
+        &drivers, NULL) == ERROR_SUCCESS);
+    assert(RegCreateKeyEx(drivers, TEXT("DriverDatabase"), 0, NULL, 0, KEY_ALL_ACCESS, NULL,
+        &child, NULL) == ERROR_SUCCESS);
+    RegCloseKey(child);
+    assert(RegSetValueEx(drivers, TEXT("value"), 0, REG_DWORD, (const BYTE*)&data, sizeof(data)) == ERROR_SUCCESS);
+    assert(RegCreateKeyEx(registryRoot, TEXT("Visible"), 0, NULL, 0, KEY_ALL_ACCESS, NULL,
+        &visible, NULL) == ERROR_SUCCESS);
+    assert(RegSetValueEx(visible, TEXT("value"), 0, REG_DWORD, (const BYTE*)&data, sizeof(data)) == ERROR_SUCCESS);
+    GetRegistrySnap(&before, registryRoot, lpszHKLMShort, NULL, &before.lpHKLM);
+    assert(before.stCounts.cKeys == 4 && before.stCounts.cValues == 2 && before.cSkippedRegKeys == 0);
+    data = 2;
+    assert(RegSetValueEx(visible, TEXT("value"), 0, REG_DWORD, (const BYTE*)&data, sizeof(data)) == ERROR_SUCCESS);
+
+    for (mode = 1; mode <= 3; ++mode) {
+        registryMode = mode;
+        queryDeniedKey = NULL;
+        GetRegistrySnap(&after, registryRoot, lpszHKLMShort, NULL, &after.lpHKLM);
+        registryMode = 0;
+        assert(!after.fIncomplete && after.cSkippedRegKeys == 1);
+        MYFREE(lpStringBuffer);
+        MYFREE(lpDataBuffer);
+        lpStringBuffer = NULL;
+        lpDataBuffer = NULL;
+        after.fFilled = TRUE;
+        after.stCounts.cAll = after.stCounts.cKeys + after.stCounts.cValues;
+        assert(GetTempFileName(temp, TEXT("rs"), 0, hivePath));
+        SaveShot(&after);
+        assert(!fHiveWriteFailed);
+        FreeShot(&after);
+        assert(LoadShot(&after));
+        assert(after.cSkippedRegKeys == 1);
+        assert(DeleteFile(hivePath));
+
+        CompareRegKeys(before.lpHKLM, after.lpHKLM);
+        assert(CompareResult.stcAdded.cKeys == 0 && CompareResult.stcDeleted.cKeys == 0);
+        assert(CompareResult.stcAdded.cValues == 0 && CompareResult.stcDeleted.cValues == 0);
+        assert(CompareResult.stcModified.cValues == (mode == 3 ? 0 : 1));
+        FreeCompareResult();
+        ClearRegKeyMatchFlags(before.lpHKLM);
+        ClearRegKeyMatchFlags(after.lpHKLM);
+        CompareRegKeys(after.lpHKLM, before.lpHKLM);
+        assert(CompareResult.stcAdded.cKeys == 0 && CompareResult.stcDeleted.cKeys == 0);
+        assert(CompareResult.stcAdded.cValues == 0 && CompareResult.stcDeleted.cValues == 0);
+        assert(CompareResult.stcModified.cValues == (mode == 3 ? 0 : 1));
+        FreeCompareResult();
+        ClearRegKeyMatchFlags(before.lpHKLM);
+        FreeShot(&after);
+    }
+    assert(RegDeleteKey(drivers, TEXT("DriverDatabase")) == ERROR_SUCCESS);
+    RegCloseKey(drivers);
+    RegCloseKey(visible);
+    assert(RegDeleteKey(registryRoot, TEXT("DRIVERS")) == ERROR_SUCCESS);
+    assert(RegDeleteKey(registryRoot, TEXT("Visible")) == ERROR_SUCCESS);
+    GetRegistrySnap(&after, registryRoot, lpszHKLMShort, NULL, &after.lpHKLM);
+    CompareRegKeys(before.lpHKLM, after.lpHKLM);
+    assert(CompareResult.stcDeleted.cKeys == 3 && CompareResult.stcDeleted.cValues == 2);
+    FreeCompareResult();
+    FreeShot(&before);
+    FreeShot(&after);
+    RegCloseKey(registryRoot);
+    assert(RegDeleteKey(HKEY_CURRENT_USER, path) == ERROR_SUCCESS);
+    MYFREE(lpStringBuffer);
+    MYFREE(lpDataBuffer);
+    lpStringBuffer = NULL;
+    lpDataBuffer = NULL;
+}
+
+static void TestIndexedComparison(void)
+{
+    const size_t count = 4096;
+    LPKEYCONTENT keys1 = MYALLOC0(count * sizeof(*keys1)), keys2 = MYALLOC0(count * sizeof(*keys2));
+    LPVALUECONTENT values1 = MYALLOC0(count * sizeof(*values1)), values2 = MYALLOC0(count * sizeof(*values2));
+    LPFILECONTENT files1 = MYALLOC0(count * sizeof(*files1)), files2 = MYALLOC0(count * sizeof(*files2));
+    TCHAR (*names)[32] = MYALLOC(count * sizeof(*names));
+    size_t i;
+
+    assert(keys1 && keys2 && values1 && values2 && files1 && files2 && names);
+    for (i = 0; i < count; ++i)
+        _sntprintf_s(names[i], 32, _TRUNCATE, TEXT("item%05u"), (unsigned)i);
+    for (i = 0; i < count; ++i) {
+        keys1[i].lpszKeyName = values1[i].lpszValueName = files1[i].lpszFileName = names[i];
+        keys2[i].lpszKeyName = values2[i].lpszValueName = files2[i].lpszFileName = names[count - i - 1];
+        values1[i].nTypeCode = values2[i].nTypeCode = REG_DWORD;
+        files1[i].nFileAttributes = files2[i].nFileAttributes = FILE_ATTRIBUTE_NORMAL;
+        if (i + 1 < count) {
+            keys1[i].lpBrotherKC = &keys1[i + 1];
+            keys2[i].lpBrotherKC = &keys2[i + 1];
+            values1[i].lpBrotherVC = &values1[i + 1];
+            values2[i].lpBrotherVC = &values2[i + 1];
+            files1[i].lpBrotherFC = &files1[i + 1];
+            files2[i].lpBrotherFC = &files2[i + 1];
+        }
+    }
+    keys2[count - 1].lpszKeyName = TEXT("ITEM00000");
+    values1[0].lpszValueName = values2[count - 1].lpszValueName = NULL;
+    keys1[0].lpFirstVC = values1;
+    keys2[count - 1].lpFirstVC = values2;
+    nameComparisons = 0;
+    CompareRegKeys(keys1, keys2);
+    assert(CompareResult.stcChanged.cKeys == 0 && CompareResult.stcChanged.cValues == 0);
+    assert(CompareResult.stcCompared.cKeys == count && CompareResult.stcCompared.cValues == count);
+    assert(nameComparisons < count * 100);
+    ClearRegKeyMatchFlags(keys2);
+    FreeCompareResult();
+    values2[0].nTypeCode = REG_BINARY;
+    values2[1].cbData = 1;
+    values2[1].lpValueData = (LPBYTE)"x";
+    keys2[0].lpszKeyName = TEXT("renamed");
+    CompareRegKeys(keys1, keys2);
+    assert(CompareResult.stcAdded.cKeys == 1 && CompareResult.stcDeleted.cKeys == 1);
+    assert(CompareResult.stcAdded.cValues == 1 && CompareResult.stcDeleted.cValues == 1);
+    assert(CompareResult.stcModified.cValues == 1);
+    FreeCompareResult();
+
+    nameComparisons = 0;
+    CompareFiles(files1, files2);
+    assert(CompareResult.stcChanged.cFiles == 0 && CompareResult.stcCompared.cFiles == count);
+    assert(nameComparisons < count * 100);
+    ClearFileMatchFlags(files2);
+    FreeCompareResult();
+    files2[0].nChkSum = 1;
+    files2[1].nFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    files2[2].lpszFileName = TEXT("renamed");
+    CompareFiles(files1, files2);
+    assert(CompareResult.stcAdded.cFiles == 1 && CompareResult.stcDeleted.cFiles == 2);
+    assert(CompareResult.stcModified.cFiles == 1 && CompareResult.stcAdded.cDirs == 1);
+    FreeCompareResult();
+    ClearFileMatchFlags(files2);
+    files1[2].lpBrotherFC = NULL;
+    // A failed index allocation must preserve the sequential comparison result.
+    failAllocationAfter = 0;
+    CompareFiles(files1, &files2[count - 3]);
+    failAllocationAfter = -1;
+    assert(CompareResult.stcChanged.cFiles == 0 && CompareResult.stcCompared.cFiles == 3);
+    FreeCompareResult();
+    MYFREE(keys1);
+    MYFREE(keys2);
+    MYFREE(values1);
+    MYFREE(values2);
+    MYFREE(files1);
+    MYFREE(files2);
+    MYFREE(names);
 }
 
 static void TestHiveValidation(void)
@@ -272,6 +514,11 @@ static void TestHiveValidation(void)
     memcpy(data + key.ofsFirstValue, &value, sizeof(value));
     memcpy(data + key.ofsKeyName, name, sizeof(name));
     assert(ValidateHive(data, sizeof(data), &header));
+    header.nKCVersion = KEYCONTENT_VERSION_2;
+    header.nKCSize = offsetof(SAVEKEYCONTENT, nScanError);
+    assert(ValidateHive(data, sizeof(data), &header));
+    header.nKCVersion = KEYCONTENT_VERSION_CURRENT;
+    header.nKCSize = sizeof(key);
     value.ofsValueData = sizeof(data) - 1;
     memcpy(data + key.ofsFirstValue, &value, sizeof(value));
     assert(!ValidateHive(data, sizeof(data), &header));
@@ -569,6 +816,12 @@ int main(void)
     TestRegistryFormatting();
     puts("Testing value growth");
     TestValueRetry();
+    puts("Testing subkey growth");
+    TestKeyRetry();
+    puts("Testing registry availability and save/load");
+    TestRegistryAvailability();
+    puts("Testing indexed comparisons");
+    TestIndexedComparison();
     puts("Testing hive validation");
     TestHiveValidation();
     puts("Testing load cleanup");

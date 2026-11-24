@@ -174,6 +174,7 @@ struct _KEYCONTENT {
     struct _KEYCONTENT FAR* lpBrotherKC;    // Pointer to key's brother
     struct _KEYCONTENT FAR* lpFatherKC;     // Pointer to key's father
     DWORD  fKeyMatch;                       // Flags used when comparing, until 1.8.2 was byte
+    DWORD  nScanError;                      // Key contents unavailable or only partially read
 };
 typedef struct _KEYCONTENT KEYCONTENT, FAR* LPKEYCONTENT;
 
@@ -228,9 +229,22 @@ struct _REGSHOT {
     BOOL          fLoaded;                  // Flag if Shot was loaded from a file
     BOOL          fIncomplete;              // Enumeration failed; the shot must not be compared/saved
     DWORD         cSkippedDirs;             // Unreadable directories and directory reparse points
+    DWORD         cSkippedRegKeys;          // Keys with unavailable or partially read contents
     struct USN_SNAPSHOT* lpUsnSnapshot;     // USN volume checkpoints if taken in USN mode
 };
 typedef struct _REGSHOT REGSHOT, FAR* LPREGSHOT;
+
+typedef struct {
+    LPCTSTR name;
+    DWORD type;
+    LPVOID content;
+    DWORD* match;
+    size_t order;
+} NAMEINDEXENTRY;
+
+NAMEINDEXENTRY* AllocateNameIndex(size_t count);
+VOID SortNameIndex(NAMEINDEXENTRY* entries, size_t count);
+LPVOID FindNameIndex(NAMEINDEXENTRY* entries, size_t count, LPCTSTR name, DWORD type);
 
 
 // Struct for a single compare result list
@@ -359,6 +373,8 @@ struct _SAVEKEYCONTENT {
     // new since key content version 2
     DWORD nKeyNameLen;  // (v2) Length of key's name in chars incl. NULL char (up to 1.8.2 there a was single byte for internal fKeyMatch field that was always zero)
 
+    DWORD nScanError;   // (v3) Key contents unavailable or only partially read
+
     // ^^^ here the key content structure can be extended
     // * increase the version number for the new key content format
     // * place a comment with a reference to the new version before the new fields
@@ -370,7 +386,8 @@ typedef struct _SAVEKEYCONTENT SAVEKEYCONTENT, FAR* LPSAVEKEYCONTENT;
 #define KEYCONTENT_VERSION_EMPTY 0
 #define KEYCONTENT_VERSION_1 1
 #define KEYCONTENT_VERSION_2 2
-#define KEYCONTENT_VERSION_CURRENT KEYCONTENT_VERSION_2
+#define KEYCONTENT_VERSION_3 3
+#define KEYCONTENT_VERSION_CURRENT KEYCONTENT_VERSION_3
 
 
 // Struct for reg value, used in saving and loading
@@ -398,7 +415,7 @@ typedef struct _SAVEVALUECONTENT SAVEVALUECONTENT, FAR* LPSAVEVALUECONTENT;
 #define VALUECONTENT_VERSION_EMPTY 0
 #define VALUECONTENT_VERSION_1 1
 #define VALUECONTENT_VERSION_2 2
-#define VALUECONTENT_VERSION_CURRENT KEYCONTENT_VERSION_2
+#define VALUECONTENT_VERSION_CURRENT VALUECONTENT_VERSION_2
 
 
 // Struct for dirs and files, used in saving and loading
@@ -652,6 +669,8 @@ enum eLangTexts {
     iszTextCheckUsn,
     iszTextScanWarning,
     iszTextUnscannedDirs,
+    iszTextRegistryScanWarning,
+    iszTextUnscannedRegKeys,
     // ATTENTION: add new language strings before this line, the last line is used to determine the count
     cLangStrings
 };

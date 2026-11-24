@@ -163,10 +163,35 @@ VOID FreeAllHeadFiles(LPHEADFILE lpHF)
 //-------------------------------------------------------------
 // File comparison engine
 //-------------------------------------------------------------
+static NAMEINDEXENTRY* IndexFiles(LPFILECONTENT first, size_t* count)
+{
+    LPFILECONTENT file;
+    NAMEINDEXENTRY* entries;
+    size_t i = 0;
+
+    *count = 0;
+    for (file = first; file != NULL; file = file->lpBrotherFC)
+        ++*count;
+    entries = AllocateNameIndex(*count);
+    if (entries != NULL) {
+        for (file = first; file != NULL; file = file->lpBrotherFC, ++i) {
+            entries[i].name = file->lpszFileName;
+            entries[i].type = ISFILE(file->nFileAttributes);
+            entries[i].content = file;
+            entries[i].match = &file->fFileMatch;
+            entries[i].order = i;
+        }
+        SortNameIndex(entries, *count);
+    }
+    return entries;
+}
+
 VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
 {
     LPFILECONTENT lpFC1;
     LPFILECONTENT lpFC2;
+    size_t fileCount = 0;
+    NAMEINDEXENTRY* fileIndex = lpStartFC1 != NULL ? IndexFiles(lpStartFC2, &fileCount) : NULL;
 
     // Compare dirs/files
     for (lpFC1 = lpStartFC1; NULL != lpFC1; lpFC1 = lpFC1->lpBrotherFC) {
@@ -177,7 +202,9 @@ VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
             CompareResult.stcCompared.cDirs++;
         }
         // Find a matching dir/file for FC1
-        for (lpFC2 = lpStartFC2; NULL != lpFC2; lpFC2 = lpFC2->lpBrotherFC) {
+        for (lpFC2 = fileIndex != NULL
+            ? FindNameIndex(fileIndex, fileCount, lpFC1->lpszFileName, ISFILE(lpFC1->nFileAttributes)) : lpStartFC2;
+            NULL != lpFC2; lpFC2 = fileIndex != NULL ? NULL : lpFC2->lpBrotherFC) {
             // skip FC2 if already matched
             if (NOMATCH != lpFC2->fFileMatch) {
                 continue;
@@ -284,6 +311,8 @@ VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
             }
         }
     }
+    if (fileIndex != NULL)
+        MYFREE(fileIndex);
 
     // Update counters display
     nCurrentTime = GetTickCount();
