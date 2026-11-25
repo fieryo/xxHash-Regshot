@@ -345,6 +345,36 @@ static void TestRegistryFormatting(void)
     MYFREE(result);
 }
 
+static void TestHtmlReportEncoding(void)
+{
+    TCHAR directory[MAX_PATH], path[MAX_PATH];
+    WCHAR report[4096];
+    DWORD size, read;
+
+    assert(GetTempPath(MAX_PATH, directory) && GetTempFileName(directory, TEXT("rs"), 0, path));
+    hFile = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(hFile != INVALID_HANDLE_VALUE);
+    assert(WriteHTMLBegin());
+    WriteTitle(TEXT("Comments:"), TEXT("Caf\x00e9 \x03a9"), TRUE);
+    WriteHTMLEnd();
+    assert(CloseHandle(hFile));
+    hFile = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    assert(hFile != INVALID_HANDLE_VALUE);
+    size = GetFileSize(hFile, NULL);
+    assert(size > 2 && size < sizeof(report) && size % sizeof(WCHAR) == 0);
+    assert(ReadFile(hFile, report, size, &read, NULL) && read == size);
+    report[size / sizeof(WCHAR)] = L'\0';
+    assert(report[0] == 0xfeff);
+    assert(wcsncmp(report + 1, L"<HTML>\r\n<HEAD>\r\n", 16) == 0);
+    assert(wcsstr(report, L"charset=utf-16") != NULL);
+    assert(wcsstr(report, L"Caf\x00e9 \x03a9") != NULL);
+    assert(wcsstr(report, L"</BODY>\r\n</HTML>\r\n") != NULL);
+    assert(!WriteHTMLBegin());
+    assert(CloseHandle(hFile));
+    hFile = INVALID_HANDLE_VALUE;
+    assert(DeleteFile(path));
+}
+
 static void TestValueRetry(void)
 {
     DWORD nameLength, type, dataLength;
@@ -1370,6 +1400,8 @@ int main(int argc, char** argv)
         return BenchmarkRegistry();
     puts("Testing registry formatting");
     TestRegistryFormatting();
+    puts("Testing Unicode HTML report encoding");
+    TestHtmlReportEncoding();
     puts("Testing value growth");
     TestValueRetry();
     puts("Testing subkey growth");

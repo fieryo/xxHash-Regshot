@@ -67,6 +67,7 @@ VOID SetTextsToDefaultLanguage(VOID)
     asLangTexts[iszTextError].lpszText = TEXT("Error");
     asLangTexts[iszTextErrorExecViewer].lpszText = TEXT("Error call External Viewer!");
     asLangTexts[iszTextErrorCreateFile].lpszText = TEXT("Error creating file!");
+    asLangTexts[iszTextErrorWriteReport].lpszText = TEXT("Error writing report!");
     asLangTexts[iszTextErrorOpenFile].lpszText = TEXT("Error open file!");
     asLangTexts[iszTextErrorMoveFP].lpszText = TEXT("Error move file pointer!");
 

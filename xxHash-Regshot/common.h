@@ -583,7 +583,7 @@ VOID    ErrMsg(LPTSTR lpszErrMsg);
 VOID    WriteTableHead(LPTSTR lpszText, DWORD nCount, BOOL fAsHTML);
 VOID    WritePart(DWORD nActionType, LPCOMPRESULT lpStartCR, BOOL fAsHTML, BOOL fUseColor);
 VOID    WriteTitle(LPTSTR lpszTitle, LPTSTR lpszValue, BOOL fAsHTML);
-VOID    WriteHTMLBegin(void);
+BOOL    WriteHTMLBegin(void);
 VOID    WriteHTMLEnd(void);
 VOID    WriteHTML_BR(void);
 VOID    ClearHeadFileMatchFlags(LPHEADFILE lpHF);
@@ -673,6 +673,7 @@ enum eLangTexts {
     iszTextRegistryScanWarning,
     iszTextUnscannedRegKeys,
     iszTextCheckHash,
+    iszTextErrorWriteReport,
     // ATTENTION: add new language strings before this line, the last line is used to determine the count
     cLangStrings
 };
