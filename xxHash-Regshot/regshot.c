@@ -887,6 +887,17 @@ static NAMEINDEXENTRY* IndexRegValues(LPVALUECONTENT first, size_t* count)
     return entries;
 }
 
+// Windows loads HKLM\DRIVERS and HKLM\COMPONENTS on demand and unloads them
+// later or on restart; presence in only one shot is not a real change.
+static BOOL IsOnDemandHive(LPKEYCONTENT lpKC)
+{
+    LPKEYCONTENT father = lpKC->lpFatherKC;
+
+    return NULL != father && NULL == father->lpFatherKC && lpszHKLMShort == father->lpszKeyName
+        && NULL != lpKC->lpszKeyName
+        && (0 == _tcsicmp(lpKC->lpszKeyName, TEXT("DRIVERS")) || 0 == _tcsicmp(lpKC->lpszKeyName, TEXT("COMPONENTS")));
+}
+
 VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
 {
     LPKEYCONTENT lpKC1;
@@ -996,7 +1007,7 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
             }
             break;
         }
-        if (NULL == lpKC2) {
+        if (NULL == lpKC2 && !IsOnDemandHive(lpKC1)) {
             // KC1 has no matching KC2, so KC1 is a deleted key
             CompareResult.stcChanged.cKeys++;
             CompareResult.stcDeleted.cKeys++;
@@ -1022,7 +1033,7 @@ VOID CompareRegKeys(LPKEYCONTENT lpStartKC1, LPKEYCONTENT lpStartKC2)
     // After looping all KC1 keys, do an extra loop over all KC2 keys and check previously set match flags to determine added keys
     for (lpKC2 = lpStartKC2; NULL != lpKC2; lpKC2 = lpKC2->lpBrotherKC) {
         // skip KC2 if already matched
-        if (NOMATCH != lpKC2->fKeyMatch) {
+        if (NOMATCH != lpKC2->fKeyMatch || IsOnDemandHive(lpKC2)) {
             continue;
         }
 

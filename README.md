@@ -114,6 +114,10 @@ the affected-key count, and debugger output includes paths and error codes.
 If either shot has such a marker, the key's values and subkeys are excluded
 from comparison, preventing inaccessible subtrees such as `HKLM\DRIVERS` from
 appearing as mass additions or deletions. Markers survive saving/loading.
+Windows loads the `HKLM\DRIVERS` and `HKLM\COMPONENTS` hives on demand and
+unloads them later or at restart. If either hive exists in only one shot, it is
+excluded instead of being reported as thousands of added or deleted keys; when
+both shots contain it, it is compared normally.
 Older snapshots remain readable but cannot recover registry keys that older
 builds silently omitted; take two fresh shots with this build.
 Hive loading validates reachable structures, strings, data ranges, and cycles
@@ -128,6 +132,12 @@ can change during a full-drive scan, and accessible coverage can vary.
 Save shots and reports outside the scanned directories, or exclude their
 output directory using the file skip list, to avoid comparing the tool's own
 output.
+
+**Defender settings...** opens Windows Security at Virus & threat protection
+settings (`windowsdefender://threatsettings/`). Regshot does not change Defender
+settings itself; Microsoft Defender may scan files Regshot reads, which can add
+CPU and disk load. Prefer excluding a trusted scan folder there over disabling
+real-time protection.
 
 **Shot and Save** captures the shot, then opens a **Save As** dialog. It does
 not automatically create a snapshot in Temp; choose a filename and confirm

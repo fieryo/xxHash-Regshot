@@ -32,6 +32,7 @@
 #define IDC_CHECKUSN                    1059
 #define IDC_CHECKHASH                   1060
 #define IDC_CHECKTEXT                   1061
+#define IDC_DEFENDER                    1062
 
 #define IDC_STATICSERVICE               1016
 #define IDC_STATICRING3                 1017
@@ -83,7 +84,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        120
 #define _APS_NEXT_COMMAND_VALUE         40007
-#define _APS_NEXT_CONTROL_VALUE         1062
+#define _APS_NEXT_CONTROL_VALUE         1063
 #define _APS_NEXT_SYMED_VALUE           102
 #endif
 #endif
