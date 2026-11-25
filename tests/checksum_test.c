@@ -6,6 +6,14 @@
 static int readCalls, allocationCalls, failReadCall;
 static BOOL failAllocation;
 static DWORD firstReadSize;
+static int openCalls;
+
+static HANDLE CountCreateFile(LPCTSTR filename, DWORD access, DWORD sharing,
+    LPSECURITY_ATTRIBUTES security, DWORD disposition, DWORD flags, HANDLE templateFile)
+{
+    ++openCalls;
+    return CreateFile(filename, access, sharing, security, disposition, flags, templateFile);
+}
 
 static QWORD ExpectedChecksum(const unsigned char* data, DWORD size)
 {
@@ -32,7 +40,15 @@ static LPVOID WINAPI CountHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
 
 #define ReadFile CountReadFile
 #define HeapAlloc CountHeapAlloc
+#undef CreateFile
+#define CreateFile CountCreateFile
 #include "../xxHash-Regshot/checksum.c"
+#undef CreateFile
+#ifdef UNICODE
+#define CreateFile CreateFileW
+#else
+#define CreateFile CreateFileA
+#endif
 #undef ReadFile
 #undef HeapAlloc
 
@@ -125,6 +141,44 @@ static int TestTextDetection(LPCTSTR directory)
     for (i = 1; i < sizeof(textExtensions) / sizeof(textExtensions[0]); ++i)
         assert(_tcsicmp(textExtensions[i - 1], textExtensions[i]) < 0);
     return ok;
+}
+
+static int TestBinaryExtensionSkip(LPCTSTR directory)
+{
+    TCHAR path[MAX_PATH], workdir[MAX_PATH];
+    const TCHAR* names[] = { TEXT("\\plain.EXE"), TEXT("\\plain.dll"),
+        TEXT("\\plain.zip"), TEXT("\\plain.png"), TEXT("\\plain.docx") };
+    const unsigned char text[] = "This is text despite the extension.";
+    size_t i;
+    int ok = 1;
+
+    if (!GetTempFileName(directory, TEXT("bin"), 0, workdir)
+        || !DeleteFile(workdir) || !CreateDirectory(workdir, NULL))
+        return 0;
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        HANDLE file;
+        DWORD written;
+        QWORD hash = 123;
+
+        _tcscpy_s(path, MAX_PATH, workdir);
+        _tcscat_s(path, MAX_PATH, names[i]);
+        file = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file == INVALID_HANDLE_VALUE)
+            return 0;
+        ok = ok && WriteFile(file, text, sizeof(text) - 1, &written, NULL)
+            && written == sizeof(text) - 1;
+        CloseHandle(file);
+        openCalls = readCalls = allocationCalls = 0;
+        ok = ok && ChecksumTextFile(path, &hash) == CHECKSUM_NOT_TEXT && hash == 123
+            && openCalls == 0 && readCalls == 0 && allocationCalls == 0;
+        ok = ok && ChecksumFromFile(path, &hash)
+            && hash == ExpectedChecksum(text, sizeof(text) - 1) && openCalls == 1;
+        if (!DeleteFile(path))
+            return 0;
+    }
+    for (i = 1; i < sizeof(binaryExtensions) / sizeof(binaryExtensions[0]); ++i)
+        assert(_tcsicmp(binaryExtensions[i - 1], binaryExtensions[i]) < 0);
+    return RemoveDirectory(workdir) && ok;
 }
 
 static int TestSize(LPCTSTR path, const unsigned char* data, DWORD size)
@@ -237,6 +291,7 @@ int main(int argc, char** argv)
         && TestSize(path, data, 256 * 1024 + 1)
         && TestSize(path, data, sizeof(data));
     ok = ok && TestTextDetection(directory);
+    ok = ok && TestBinaryExtensionSkip(directory);
     for (failReadCall = 1; failReadCall <= 3; ++failReadCall) {
         readCalls = 0;
         hash = 123;

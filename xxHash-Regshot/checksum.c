@@ -14,10 +14,26 @@
 #define FILE_BUFFER_SIZE (256 * 1024)
 #define TEXT_SAMPLE_SIZE 4096
 
-BOOL IsKnownTextExtension(LPCTSTR filename)
+static const TCHAR* const binaryExtensions[] = {
+    TEXT("7z"), TEXT("a"), TEXT("aac"), TEXT("avi"), TEXT("bin"),
+    TEXT("bmp"), TEXT("cab"), TEXT("class"), TEXT("com"), TEXT("cur"),
+    TEXT("db"), TEXT("dll"), TEXT("doc"), TEXT("docx"),
+    TEXT("eot"), TEXT("exe"), TEXT("flac"), TEXT("gif"), TEXT("gz"),
+    TEXT("ico"), TEXT("iso"), TEXT("jar"), TEXT("jpeg"), TEXT("jpg"),
+    TEXT("lib"), TEXT("m4a"), TEXT("mkv"), TEXT("mov"), TEXT("mp3"),
+    TEXT("mp4"), TEXT("msi"), TEXT("msp"), TEXT("obj"), TEXT("ogg"),
+    TEXT("otf"), TEXT("pdb"), TEXT("pdf"), TEXT("png"), TEXT("ppt"),
+    TEXT("pptx"), TEXT("pyc"), TEXT("rar"), TEXT("sqlite"), TEXT("sqlite3"),
+    TEXT("svgz"), TEXT("sys"), TEXT("tar"), TEXT("tif"), TEXT("tiff"),
+    TEXT("ttf"), TEXT("vhd"), TEXT("vhdx"), TEXT("wav"), TEXT("webm"),
+    TEXT("webp"), TEXT("wim"), TEXT("woff"), TEXT("woff2"), TEXT("xls"),
+    TEXT("xlsx"), TEXT("xz"), TEXT("zip"), TEXT("zst")
+};
+
+static BOOL HasExtension(LPCTSTR filename, const TCHAR* const* extensions, size_t count)
 {
     LPCTSTR name = filename, p, extension = NULL;
-    size_t low = 0, high = sizeof(textExtensions) / sizeof(textExtensions[0]);
+    size_t low = 0, high = count;
 
     for (p = filename; *p; ++p) {
         if (*p == (TCHAR)'\\' || *p == (TCHAR)'/') {
@@ -32,7 +48,7 @@ BOOL IsKnownTextExtension(LPCTSTR filename)
         return FALSE;
     while (low < high) {
         size_t mid = low + (high - low) / 2;
-        int cmp = _tcsicmp(extension, textExtensions[mid]);
+        int cmp = _tcsicmp(extension, extensions[mid]);
 
         if (cmp == 0)
             return TRUE;
@@ -42,6 +58,11 @@ BOOL IsKnownTextExtension(LPCTSTR filename)
             low = mid + 1;
     }
     return FALSE;
+}
+
+BOOL IsKnownTextExtension(LPCTSTR filename)
+{
+    return HasExtension(filename, textExtensions, sizeof(textExtensions) / sizeof(textExtensions[0]));
 }
 
 static BOOL LooksLikeText(const unsigned char* sample, DWORD size)
@@ -174,5 +195,8 @@ BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum)
 
 CHECKSUM_RESULT ChecksumTextFile(LPCTSTR filename, QWORD* checksum)
 {
+    if (!IsKnownTextExtension(filename)
+        && HasExtension(filename, binaryExtensions, sizeof(binaryExtensions) / sizeof(binaryExtensions[0])))
+        return CHECKSUM_NOT_TEXT;
     return ChecksumFile(filename, checksum, TRUE);
 }
