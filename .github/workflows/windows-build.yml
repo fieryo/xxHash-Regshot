@@ -23,7 +23,7 @@ jobs:
         with:
           arch: ${{ matrix.platform == 'Win32' && 'x86' || 'x64' }}
       - name: Build
-        run: msbuild HackerslangsRegShot/HackerslangsRegShot.vcxproj /m /p:Configuration=Release /p:Platform=${{ matrix.platform }} /p:PlatformToolset=v143
+        run: msbuild xxHash-Regshot/xxHash-Regshot.vcxproj /m /p:Configuration=Release /p:Platform=${{ matrix.platform }} /p:PlatformToolset=v143
       - name: Test checksums
         shell: cmd
         env:
@@ -34,5 +34,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xxHash-Regshot-windows-x64
-          path: HackerslangsRegShot/x64/Release/HackerslangsRegShot.exe
+          path: xxHash-Regshot/x64/Release/xxHash-Regshot.exe
           if-no-files-found: error

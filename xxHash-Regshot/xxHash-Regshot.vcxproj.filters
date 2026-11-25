@@ -115,7 +115,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="HackerslangsRegShot.rc">
+    <ResourceCompile Include="xxHash-Regshot.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
   </ItemGroup>
@@ -123,7 +123,7 @@
     <Image Include="small.ico">
       <Filter>Resource Files</Filter>
     </Image>
-    <Image Include="HackerslangsRegShot.ico">
+    <Image Include="xxHash-Regshot.ico">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>
@@ -133,6 +133,6 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <Manifest Include="HackerslangsRegShot.exe.manifest" />
+    <Manifest Include="xxHash-Regshot.exe.manifest" />
   </ItemGroup>
 </Project>

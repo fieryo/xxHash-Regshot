@@ -22,7 +22,7 @@
     <VCProjectVersion>18.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{b36e6177-8bf6-47f5-8323-ab868ae3a4db}</ProjectGuid>
-    <RootNamespace>HackerslangsRegShot</RootNamespace>
+    <RootNamespace>xxHash-Regshot</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -219,17 +219,17 @@
     <ClCompile Include="usnsnapshot.c" />
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="HackerslangsRegShot.rc" />
+    <ResourceCompile Include="xxHash-Regshot.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="HackerslangsRegShot.ico" />
+    <Image Include="xxHash-Regshot.ico" />
     <Image Include="small.ico" />
   </ItemGroup>
   <ItemGroup>
     <None Include="revision.h.in" />
   </ItemGroup>
   <ItemGroup>
-    <Manifest Include="HackerslangsRegShot.exe.manifest" />
+    <Manifest Include="xxHash-Regshot.exe.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -1,4 +1,4 @@
-#include "../HackerslangsRegShot/fileenum.h"
+#include "../xxHash-Regshot/fileenum.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -39,7 +39,7 @@ static DWORD FakeGetLastError(void) { return lastError; }
 #define FindFirstFileEx FakeFindFirstFileEx
 #define FindFirstFile FakeFindFirstFile
 #define GetLastError FakeGetLastError
-#include "../HackerslangsRegShot/fileenum.c"
+#include "../xxHash-Regshot/fileenum.c"
 
 int main(void)
 {
