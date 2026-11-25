@@ -3,5 +3,5 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Project Path="HackerslangsRegShot/HackerslangsRegShot.vcxproj" Id="b36e6177-8bf6-47f5-8323-ab868ae3a4db" />
+  <Project Path="xxHash-Regshot/xxHash-Regshot.vcxproj" Id="b36e6177-8bf6-47f5-8323-ab868ae3a4db" />
 </Solution>

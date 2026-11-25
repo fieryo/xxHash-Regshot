@@ -1,14 +1,13 @@
 @echo off
 setlocal
 pushd "%~dp0"
-cl /nologo /W4 /DUNICODE /D_UNICODE /Fe:checksum_test.exe checksum_test.c ^
-  ..\HackerslangsRegShot\checksum.c ^
-  ..\HackerslangsRegShot\third_party\xxhash\xxhash.c ^
-  ..\HackerslangsRegShot\third_party\xxhash\xxh_x86dispatch.c
+cl /nologo /W4 /O2 /DUNICODE /D_UNICODE /Fe:checksum_test.exe checksum_test.c ^
+  ..\xxHash-Regshot\third_party\xxhash\xxhash.c ^
+  ..\xxHash-Regshot\third_party\xxhash\xxh_x86dispatch.c
 if errorlevel 1 exit /b 1
-checksum_test.exe
+checksum_test.exe --benchmark-small-files
 set result=%errorlevel%
-del /q checksum_test.exe checksum_test.obj checksum.obj xxhash.obj xxh_x86dispatch.obj
+del /q checksum_test.exe checksum_test.obj xxhash.obj xxh_x86dispatch.obj
 if not "%result%"=="0" exit /b %result%
 cl /nologo /W4 /DUNICODE /D_UNICODE /Fe:fileenum_test.exe fileenum_test.c
 if errorlevel 1 exit /b 1
@@ -23,8 +22,8 @@ set result=%errorlevel%
 del /q usn_test.exe usn_test.obj
 if not "%result%"=="0" exit /b %result%
 cl /nologo /W4 /DUNICODE /D_UNICODE /Fe:usnbaseline_test.exe usnbaseline_test.c ^
-  ..\HackerslangsRegShot\usnbaseline.c ^
-  ..\HackerslangsRegShot\third_party\xxhash\xxhash.c
+  ..\xxHash-Regshot\usnbaseline.c ^
+  ..\xxHash-Regshot\third_party\xxhash\xxhash.c
 if errorlevel 1 exit /b 1
 usnbaseline_test.exe
 set result=%errorlevel%
@@ -32,13 +31,13 @@ del /q usnbaseline_test.exe usnbaseline_test.obj usnbaseline.obj xxhash.obj
 if not "%result%"=="0" exit /b %result%
 cl /nologo /W4 /O2 /DUNICODE /D_UNICODE /D_WINDOWS /Fe:snapshot_logic_test.exe ^
   snapshot_logic_test.c ^
-  ..\HackerslangsRegShot\checksum.c ..\HackerslangsRegShot\fileenum.c ^
-  ..\HackerslangsRegShot\language.c ..\HackerslangsRegShot\misc.c ^
-  ..\HackerslangsRegShot\output.c ..\HackerslangsRegShot\setup.c ^
-  ..\HackerslangsRegShot\ui.c ..\HackerslangsRegShot\winmain.c ..\HackerslangsRegShot\work.c ^
-  ..\HackerslangsRegShot\usn.c ..\HackerslangsRegShot\usnbaseline.c ^
-  ..\HackerslangsRegShot\third_party\xxhash\xxhash.c ^
-  ..\HackerslangsRegShot\third_party\xxhash\xxh_x86dispatch.c ^
+  ..\xxHash-Regshot\checksum.c ..\xxHash-Regshot\fileenum.c ^
+  ..\xxHash-Regshot\language.c ..\xxHash-Regshot\misc.c ^
+  ..\xxHash-Regshot\output.c ..\xxHash-Regshot\setup.c ^
+  ..\xxHash-Regshot\ui.c ..\xxHash-Regshot\winmain.c ..\xxHash-Regshot\work.c ^
+  ..\xxHash-Regshot\usn.c ..\xxHash-Regshot\usnbaseline.c ^
+  ..\xxHash-Regshot\third_party\xxhash\xxhash.c ^
+  ..\xxHash-Regshot\third_party\xxhash\xxh_x86dispatch.c ^
   /link /SUBSYSTEM:CONSOLE advapi32.lib user32.lib shell32.lib comdlg32.lib gdi32.lib
 if errorlevel 1 exit /b 1
 snapshot_logic_test.exe

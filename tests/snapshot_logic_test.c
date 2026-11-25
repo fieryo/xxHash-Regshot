@@ -1,4 +1,4 @@
-#include "../HackerslangsRegShot/common.h"
+#include "../xxHash-Regshot/common.h"
 
 extern size_t nDataBufferSize;
 static int valueCalls;
@@ -18,6 +18,8 @@ static BOOL keepKeyGrowing;
 static size_t nameComparisons;
 static BOOL profileRegistry;
 static BOOL profileLegacyCapacity;
+static BOOL countFileAllocations;
+static size_t fileAllocations;
 static ULONGLONG profileDataBytes;
 static DWORD profileMaxDataCapacity;
 typedef struct {
@@ -50,6 +52,8 @@ static LPVOID WINAPI FakeHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
     LARGE_INTEGER start, end;
     LPVOID result;
 
+    if (countFileAllocations)
+        ++fileAllocations;
     if (failAllocationAfter == 0)
         return NULL;
     if (failAllocationAfter > 0)
@@ -198,10 +202,10 @@ static LONG WINAPI ProfileRegCloseKey(HKEY key)
 #define ReadFile FakeReadFile
 #define WriteFile FakeWriteFile
 #define ErrMsg FakeErrMsg
-#include "../HackerslangsRegShot/regshot.c"
-#include "../HackerslangsRegShot/usnsnapshot.c"
-#include "../HackerslangsRegShot/fileenum.h"
-#include "../HackerslangsRegShot/checksum.h"
+#include "../xxHash-Regshot/regshot.c"
+#include "../xxHash-Regshot/usnsnapshot.c"
+#include "../xxHash-Regshot/fileenum.h"
+#include "../xxHash-Regshot/checksum.h"
 
 static int enumerationMode;
 static int classicRestarts;
@@ -295,7 +299,7 @@ static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD
 #define SnapshotDirOpen FakeSnapshotDirOpen
 #define SnapshotDirNext FakeSnapshotDirNext
 #define UsnSnapshotVolume FakeSnapshotVolume
-#include "../HackerslangsRegShot/fileshot.c"
+#include "../xxHash-Regshot/fileshot.c"
 #undef SnapshotDirOpen
 #undef SnapshotDirNext
 #undef UsnSnapshotVolume
@@ -919,6 +923,79 @@ static void TestEnumerationRecovery(void)
     assert(DeleteFile(first) && DeleteFile(second) && RemoveDirectory(path));
 }
 
+static void TestEntryPathReuse(void)
+{
+    TCHAR temp[MAX_PATH], path[MAX_PATH], child[MAX_PATH], names[4][MAX_PATH];
+    const TCHAR* suffixes[] = {
+        TEXT("\\a"), TEXT("\\a-much-longer-file-name"), TEXT("\\skip"),
+        TEXT("\\child\\file-\x03A9")
+    };
+    LPTSTR skips[] = { TEXT("skip"), names[3], NULL };
+    LPTSTR* previousSkips = lprgszFileSkipStrings;
+    REGSHOT shot = { 0 };
+    LPFILECONTENT root = NULL, entry;
+    QWORD expected;
+    size_t i;
+    DWORD written;
+    HANDLE file;
+
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    _tcscpy_s(child, MAX_PATH, path);
+    _tcscat_s(child, MAX_PATH, TEXT("\\child"));
+    assert(CreateDirectory(child, NULL));
+    for (i = 0; i < _countof(names); ++i) {
+        _tcscpy_s(names[i], MAX_PATH, path);
+        _tcscat_s(names[i], MAX_PATH, suffixes[i]);
+        file = CreateFile(names[i], GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        assert(file != INVALID_HANDLE_VALUE);
+        assert(WriteFile(file, &i, sizeof(i), &written, NULL) && written == sizeof(i));
+        assert(CloseHandle(file));
+    }
+    failAllocationAfter = 3;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    failAllocationAfter = -1;
+    assert(shot.fIncomplete && root != NULL && root->lpFirstSubFC == NULL);
+    FreeAllFileContents(root);
+    ZeroMemory(&shot, sizeof(shot));
+    root = NULL;
+    fileAllocations = 0;
+    countFileAllocations = TRUE;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    countFileAllocations = FALSE;
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 4 && shot.stCounts.cDirs == 2);
+    // Two allocations per entry, plus one reusable path per directory and root setup.
+    assert(fileAllocations <= 15);
+    for (entry = root->lpFirstSubFC; entry != NULL; entry = entry->lpBrotherFC) {
+        LPFILECONTENT content = ISDIR(entry->nFileAttributes) ? entry->lpFirstSubFC : entry;
+        LPTSTR fullName = GetWholeFileName(content, 0);
+
+        assert(fullName != NULL && ChecksumFromFile(fullName, &expected));
+        assert(!content->nChkSumUnknown && content->nChkSum == expected);
+        MYFREE(fullName);
+    }
+    FreeAllFileContents(root);
+    ZeroMemory(&shot, sizeof(shot));
+    root = NULL;
+    lprgszFileSkipStrings = skips;
+    fileAllocations = 0;
+    countFileAllocations = TRUE;
+    GetFilesSnap(&shot, path, NULL, &root, NULL);
+    countFileAllocations = FALSE;
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 2 && shot.stCounts.cDirs == 2);
+    assert(fileAllocations <= 11);
+    for (entry = root->lpFirstSubFC; entry != NULL; entry = entry->lpBrotherFC) {
+        assert(_tcscmp(entry->lpszFileName, TEXT("skip")) != 0);
+        if (ISDIR(entry->nFileAttributes))
+            assert(entry->lpFirstSubFC == NULL);
+    }
+    lprgszFileSkipStrings = previousSkips;
+    FreeAllFileContents(root);
+    for (i = 0; i < _countof(names); ++i)
+        assert(DeleteFile(names[i]));
+    assert(RemoveDirectory(child) && RemoveDirectory(path));
+}
+
 static void TestSkippedComparison(void)
 {
     FILECONTENT before = { 0 }, after = { 0 }, child = { 0 };
@@ -1127,6 +1204,8 @@ int main(int argc, char** argv)
     TestIndependentUsnOption();
     puts("Testing enumeration recovery");
     TestEnumerationRecovery();
+    puts("Testing directory entry path reuse");
+    TestEntryPathReuse();
     puts("Testing skipped-directory comparisons");
     TestSkippedComparison();
     puts("Testing skipped-directory save/load");

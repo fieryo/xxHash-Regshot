@@ -1,10 +1,14 @@
 # xxHash-Regshot
 An improved version of Regshot with xxHash
 
-By default, file snapshots use the 64-bit XXH3 hash from xxHash 0.8.4. The upstream
-x86 dispatcher selects AVX2 when supported, with a fallback on older CPUs.
-Files up to 256 KiB use the one-shot XXH3 path without allocating streaming
-state; larger files stream through a 256 KiB sequential-read buffer.
+By default, file snapshots use the 64-bit XXH3 hash from xxHash 0.8.4. xxHash
+has no 8-bit variant, and truncating the result would not improve speed but
+would substantially increase collisions. The upstream x86 dispatcher selects
+AVX2 when supported, with a fallback on older CPUs.
+Files up to 16 KiB need only one read and use a small stack buffer, without
+heap allocation or a separate EOF probe. Files up to 256 KiB use the one-shot
+XXH3 path without allocating streaming state; larger files stream through a
+256 KiB sequential-read buffer allocated only when needed.
 XXH3 is non-cryptographic and is not suitable for security verification.
 
 New hive files store hashes and directory scan status in file-content version 4
@@ -16,18 +20,22 @@ with them rely on file metadata. Hashing failures are written to the
 Windows debugger output and likewise leave the hash unknown.
 
 xxHash is distributed under the BSD 2-Clause license; see
-`HackerslangsRegShot/third_party/xxhash/LICENSE`.
+`xxHash-Regshot/third_party/xxhash/LICENSE`.
 
 ## Windows x64 build
 
 The Windows build workflow runs on pushes, pull requests, or manually from
 the Actions tab. Download the `xxHash-Regshot-windows-x64` artifact from a
-successful run to get `HackerslangsRegShot.exe`.
+successful run to get `xxHash-Regshot.exe`.
 
 Run `tests\run-checksum-test.cmd` from a Visual Studio Developer Command
 Prompt to test empty, binary, multi-buffer, and unreadable file hashing,
 directory enumeration fallback behavior, USN journal reading, and USN
 baseline validation and hash reuse rules.
+The checksum runner also reports an ABBA-ordered comparison against the old
+small-file path for cached empty, 4 KiB, and 16 KiB files. These timings isolate
+per-file overhead; whole-drive results also depend on storage, antivirus, and
+the file-size mix.
 The runner also covers Unicode registry reports, registry-value growth,
 damaged/cyclic hive rejection, directory retry, protected-directory handling,
 junction traversal prevention, skipped-directory save/load and comparisons,
@@ -38,6 +46,9 @@ Run it elevated for the USN baseline permission tests.
 
 Directory scans request basic directory information and large-fetch
 enumeration when supported, falling back to compatible Windows APIs.
+Each active directory reuses one full-path buffer for its entries, avoiding
+per-file path allocations and repeated walks up the directory tree. Skip-list
+checks run before allocating snapshot entries.
 The default scan path is `C:\`, not just `C:\Windows`. A saved `ExtDir`
 setting is preserved; change the **Scan dir** field to `C:\` if an existing
 `regshot.ini` still selects `C:\Windows`. Enable **Scan dir** or **USN

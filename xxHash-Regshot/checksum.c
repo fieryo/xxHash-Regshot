@@ -7,6 +7,10 @@
 
 #include "checksum.h"
 #include "third_party/xxhash/xxh_x86dispatch.h"
+#include <string.h>
+
+#define SMALL_FILE_BUFFER_SIZE (16 * 1024)
+#define FILE_BUFFER_SIZE (256 * 1024)
 
 static INIT_ONCE dispatchOnce = INIT_ONCE_STATIC_INIT;
 
@@ -22,11 +26,11 @@ static BOOL CALLBACK InitializeHashDispatch(PINIT_ONCE once, PVOID parameter, PV
 
 BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum)
 {
-    unsigned char buffer[256 * 1024];
-    unsigned char next;
-    XXH3_state_t* state;
+    unsigned char smallBuffer[SMALL_FILE_BUFFER_SIZE + 1];
+    unsigned char* buffer = NULL;
+    XXH3_state_t* state = NULL;
     HANDLE file;
-    DWORD bytesRead;
+    DWORD bytesRead, firstRead;
     BOOL success = FALSE;
 
     file = CreateFile(filename, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -39,32 +43,36 @@ BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum)
         CloseHandle(file);
         return FALSE;
     }
-    if (!ReadFile(file, buffer, sizeof(buffer), &bytesRead, NULL)) {
-        CloseHandle(file);
-        return FALSE;
+    if (!ReadFile(file, smallBuffer, sizeof(smallBuffer), &firstRead, NULL))
+        goto done;
+    // A short synchronous disk-file read reaches EOF; no separate probe is needed.
+    if (firstRead < sizeof(smallBuffer)) {
+        *checksum = (QWORD)XXH3_64bits(smallBuffer, firstRead);
+        success = TRUE;
+        goto done;
     }
-    {
-        DWORD extra;
 
-        if (!ReadFile(file, &next, 1, &extra, NULL)) {
-            CloseHandle(file);
-            return FALSE;
-        }
-        if (extra == 0) {
-            *checksum = (QWORD)XXH3_64bits(buffer, bytesRead);
-            CloseHandle(file);
-            return TRUE;
-        }
+    buffer = HeapAlloc(GetProcessHeap(), 0, FILE_BUFFER_SIZE + 1);
+    if (buffer == NULL) {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        goto done;
     }
+    memcpy(buffer, smallBuffer, firstRead);
+    if (!ReadFile(file, buffer + firstRead, FILE_BUFFER_SIZE + 1 - firstRead, &bytesRead, NULL))
+        goto done;
+    bytesRead += firstRead;
+    if (bytesRead <= FILE_BUFFER_SIZE) {
+        *checksum = (QWORD)XXH3_64bits(buffer, bytesRead);
+        success = TRUE;
+        goto done;
+    }
+
     state = XXH3_createState();
-    if (state == NULL) {
-        CloseHandle(file);
-        return FALSE;
-    }
+    if (state == NULL)
+        goto done;
     if (XXH3_64bits_reset(state) == XXH_OK
-        && XXH3_64bits_update(state, buffer, bytesRead) == XXH_OK
-        && XXH3_64bits_update(state, &next, 1) == XXH_OK) {
-        while (ReadFile(file, buffer, sizeof(buffer), &bytesRead, NULL)) {
+        && XXH3_64bits_update(state, buffer, bytesRead) == XXH_OK) {
+        while (ReadFile(file, buffer, FILE_BUFFER_SIZE, &bytesRead, NULL)) {
             if (bytesRead == 0) {
                 *checksum = (QWORD)XXH3_64bits_digest(state);
                 success = TRUE;
@@ -75,7 +83,11 @@ BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum)
             }
         }
     }
-    XXH3_freeState(state);
+done:
+    if (state != NULL)
+        XXH3_freeState(state);
+    if (buffer != NULL)
+        HeapFree(GetProcessHeap(), 0, buffer);
     CloseHandle(file);
     return success;
 }

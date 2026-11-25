@@ -1,4 +1,4 @@
-#include "../HackerslangsRegShot/usnbaseline.h"
+#include "../xxHash-Regshot/usnbaseline.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

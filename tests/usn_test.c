@@ -1,4 +1,4 @@
-#include "../HackerslangsRegShot/usn.h"
+#include "../xxHash-Regshot/usn.h"
 #include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -57,7 +57,7 @@ static BOOL WINAPI FakeDeviceIoControl(HANDLE volume, DWORD code, LPVOID input,
 }
 
 #define DeviceIoControl FakeDeviceIoControl
-#include "../HackerslangsRegShot/usn.c"
+#include "../xxHash-Regshot/usn.c"
 
 static BOOL SeenFile(const USN_CHANGE* change, void* context)
 {

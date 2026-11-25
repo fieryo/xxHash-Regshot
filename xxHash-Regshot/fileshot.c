@@ -410,6 +410,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     ULONGLONG nFileId;
     DWORD nUsnVolume;
     DWORD cFilesBefore, cDirsBefore, cSkippedBefore;
+    LPTSTR lpszEntryPath;
+    size_t cchEntryPrefix;
 
     // Full dir/file name is already given
 
@@ -612,13 +614,20 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
 #endif
         return;
     }
+    lpszEntryPath = GetWholeFileName(lpFatherFC, MAX_PATH + 5);
+    if (lpszEntryPath == NULL) {
+        SnapshotDirClose(&sDir);
+        lpShot->fIncomplete = TRUE;
+        OutputDebugString(TEXT("File snapshot: not enough memory for directory entry paths.\n"));
+        return;
+    }
+    cchEntryPrefix = _tcslen(lpszEntryPath);
+    lpszEntryPath[cchEntryPrefix++] = (TCHAR)'\\';
     cFilesBefore = lpShot->stCounts.cFiles;
     cDirsBefore = lpShot->stCounts.cDirs;
     cSkippedBefore = lpShot->cSkippedDirs;
     // b) process entry then find next
     do {
-        lpszFullName = NULL;
-
         // Check if file is to be generic excluded
         if ((NULL == FindData.cFileName)
             || (((TCHAR)'.' == FindData.cFileName[0])  // fast exclusion for 99% of the cases
@@ -627,32 +636,22 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
             continue;  // ignore this entry and continue with next file
         }
 
-        // Create new file content
-        // put in a separate var for later use
-        lpFC = MYALLOC0(sizeof(FILECONTENT));
-
-        // Set father of current key
-        lpFC->lpFatherFC = lpFatherFC;
-
-        // Set file name length
-        lpFC->cchFileName = _tcslen(FindData.cFileName);
-
         // Check if dir/file is to be excluded
         if (NULL != lprgszFileSkipStrings[0]) {  // only if there is something to exclude
             if (IsInSkipList(FindData.cFileName, lprgszFileSkipStrings)) {
-                FreeAllFileContents(lpFC);
-                continue;  // ignore this entry and continue with next file
-            }
-
-            lpFC->lpszFileName = FindData.cFileName;  // borrow for creating whole name
-            lpszFullName = GetWholeFileName(lpFC, 4);  // +4 for "\*.*" search when directory (possible recursive call later in iteration)
-            lpFC->lpszFileName = NULL;
-            if (IsInSkipList(lpszFullName, lprgszFileSkipStrings)) {
-                MYFREE(lpszFullName);
-                FreeAllFileContents(lpFC);
                 continue;  // ignore this entry and continue with next file
             }
         }
+        _tcscpy_s(lpszEntryPath + cchEntryPrefix, MAX_PATH + 4, FindData.cFileName);
+        if (NULL != lprgszFileSkipStrings[0]) {
+            if (IsInSkipList(lpszEntryPath, lprgszFileSkipStrings)) {
+                continue;  // ignore this entry and continue with next file
+            }
+        }
+
+        lpFC = MYALLOC0(sizeof(FILECONTENT));
+        lpFC->lpFatherFC = lpFatherFC;
+        lpFC->cchFileName = _tcslen(FindData.cFileName);
 
         // Copy pointer to current file into caller's pointer
         if (NULL != lplpCaller) {
@@ -696,15 +695,12 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                 }
             }
             if (!lpShot->fMetadataOnly && !(lpFC->fUsnFlags & USNFC_REUSED)) {
-                LPTSTR lpszFullFileName = GetWholeFileName(lpFC, 0);
-
-                lpFC->nChkSumUnknown = !ChecksumFromFile(lpszFullFileName, &lpFC->nChkSum);
+                lpFC->nChkSumUnknown = !ChecksumFromFile(lpszEntryPath, &lpFC->nChkSum);
                 if (lpFC->nChkSumUnknown) {
                     OutputDebugString(TEXT("Could not hash file: "));
-                    OutputDebugString(lpszFullFileName);
+                    OutputDebugString(lpszEntryPath);
                     OutputDebugString(TEXT("\n"));
                 }
-                MYFREE(lpszFullFileName);
             }
             if (fCacheable && !lpFC->nChkSumUnknown) {
                 lpFC->fUsnFlags |= USNFC_CACHEABLE;
@@ -729,15 +725,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                 MarkDirectorySkipped(lpShot, lpFC, ERROR_CANT_ACCESS_FILE);
             }
             else {
-                if (NULL == lpszFullName) {
-                    lpszFullName = GetWholeFileName(lpFC, 4);  // +4 for "\*.*" search
-                }
-                GetFilesSnap(lpShot, lpszFullName, lpFC, &lpFC->lpFirstSubFC, &sDir);
+                GetFilesSnap(lpShot, lpszEntryPath, lpFC, &lpFC->lpFirstSubFC, &sDir);
             }
-        }
-
-        if (NULL != lpszFullName) {
-            MYFREE(lpszFullName);
         }
 
         // Set "lpBrotherFC" pointer for storing the next brother's pointer
@@ -747,6 +736,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         DWORD error = GetLastError();
         BOOL retry = sDir.ids && error != ERROR_NO_MORE_FILES;
 
+        MYFREE(lpszEntryPath);
         SnapshotDirClose(&sDir);
         if (retry) {
             SNAPSHOT_DIR classicParent;
