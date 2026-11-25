@@ -374,16 +374,20 @@ BOOL CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 
         case IDC_CHECKDIR:
         case IDC_CHECKUSN:
+        case IDC_CHECKHASH:
             if (SendMessage(GetDlgItem(hDlg, IDC_CHECKDIR), BM_GETCHECK, (WPARAM)0, (LPARAM)0) == BST_CHECKED
                 || SendMessage(GetDlgItem(hDlg, IDC_CHECKUSN), BM_GETCHECK, (WPARAM)0, (LPARAM)0) == BST_CHECKED) {
                 EnableWindow(GetDlgItem(hDlg, IDC_EDITDIR), TRUE);
                 EnableWindow(GetDlgItem(hDlg, IDC_BROWSE1), TRUE);
                 EnableWindow(GetDlgItem(hDlg, IDC_CHECKHASH), TRUE);
+                EnableWindow(GetDlgItem(hDlg, IDC_CHECKTEXT),
+                    SendMessage(GetDlgItem(hDlg, IDC_CHECKHASH), BM_GETCHECK, 0, 0) == BST_CHECKED);
             }
             else {
                 EnableWindow(GetDlgItem(hDlg, IDC_EDITDIR), FALSE);
                 EnableWindow(GetDlgItem(hDlg, IDC_BROWSE1), FALSE);
                 EnableWindow(GetDlgItem(hDlg, IDC_CHECKHASH), FALSE);
+                EnableWindow(GetDlgItem(hDlg, IDC_CHECKTEXT), FALSE);
             }
             return(TRUE);
 

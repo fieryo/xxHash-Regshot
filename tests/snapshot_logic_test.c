@@ -219,6 +219,12 @@ static BOOL CountChecksumFromFile(LPCTSTR path, QWORD* checksum)
     return ChecksumFromFile(path, checksum);
 }
 
+static CHECKSUM_RESULT CountChecksumTextFile(LPCTSTR path, QWORD* checksum)
+{
+    ++hashCalls;
+    return ChecksumTextFile(path, checksum);
+}
+
 static BOOL FakeReuseHash(const USN_SNAPSHOT* snapshot, DWORD volume, ULONGLONG fileId,
     ULONGLONG size, ULONGLONG writeTime, DWORD attributes, ULONGLONG* hash)
 {
@@ -295,6 +301,7 @@ static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD
 }
 
 #define ChecksumFromFile CountChecksumFromFile
+#define ChecksumTextFile CountChecksumTextFile
 #define UsnSnapshotReuseHash FakeReuseHash
 #define SnapshotDirOpen FakeSnapshotDirOpen
 #define SnapshotDirNext FakeSnapshotDirNext
@@ -304,6 +311,7 @@ static DWORD FakeSnapshotVolume(USN_SNAPSHOT* snapshot, const WCHAR* guid, DWORD
 #undef SnapshotDirNext
 #undef UsnSnapshotVolume
 #undef ChecksumFromFile
+#undef ChecksumTextFile
 #undef UsnSnapshotReuseHash
 
 static void TestRegistryFormatting(void)
@@ -752,6 +760,16 @@ static void TestMetadataOnly(void)
 
     shot.lpHF = MYALLOC0(sizeof(HEADFILE));
     shot.lpUsnSnapshot = &snapshot;
+    shot.fTextOnly = TRUE;
+    hashCalls = reuseCalls = 0;
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && hashCalls == 1 && reuseCalls == 0);
+    assert(!shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    shot.lpUsnSnapshot = NULL;
+    FreeShot(&shot);
+
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
     hashCalls = reuseCalls = 0;
     GetFilesSnapAgainst(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL, NULL, TRUE);
     assert(!shot.fIncomplete && hashCalls == 0 && reuseCalls == 0);
@@ -831,7 +849,7 @@ BOOL CALLBACK DialogProc(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam
 
 static void TestIndependentUsnOption(void)
 {
-    const int ids[] = { IDC_CHECKDIR, IDC_CHECKUSN, IDC_CHECKHASH, IDC_EDITDIR, IDC_BROWSE1 };
+    const int ids[] = { IDC_CHECKDIR, IDC_CHECKUSN, IDC_CHECKHASH, IDC_CHECKTEXT, IDC_EDITDIR, IDC_BROWSE1 };
     HWND parent, previousWindow = hWnd;
     TCHAR temp[MAX_PATH], path[MAX_PATH];
     REGSHOT shot = { 0 };
@@ -841,8 +859,8 @@ static void TestIndependentUsnOption(void)
         0, 0, 1, 1, NULL, NULL, NULL, NULL);
     assert(parent != NULL);
     for (i = 0; i < _countof(ids); ++i) {
-        assert(CreateWindow(i == 3 ? TEXT("EDIT") : TEXT("BUTTON"), TEXT(""),
-            WS_CHILD | (i < 3 ? BS_AUTOCHECKBOX : 0), 0, 0, 1, 1,
+        assert(CreateWindow(i == 4 ? TEXT("EDIT") : TEXT("BUTTON"), TEXT(""),
+            WS_CHILD | (i < 4 ? BS_AUTOCHECKBOX : 0), 0, 0, 1, 1,
             parent, (HMENU)(INT_PTR)ids[i], NULL, NULL) != NULL);
     }
     DialogProc(parent, WM_COMMAND, IDC_CHECKDIR, 0);
@@ -852,6 +870,13 @@ static void TestIndependentUsnOption(void)
     DialogProc(parent, WM_COMMAND, IDC_CHECKUSN, 0);
     assert(IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
     assert(IsWindowEnabled(GetDlgItem(parent, IDC_CHECKHASH)));
+    assert(!IsWindowEnabled(GetDlgItem(parent, IDC_CHECKTEXT)));
+    SendDlgItemMessage(parent, IDC_CHECKHASH, BM_SETCHECK, BST_CHECKED, 0);
+    DialogProc(parent, WM_COMMAND, IDC_CHECKHASH, 0);
+    assert(IsWindowEnabled(GetDlgItem(parent, IDC_CHECKTEXT)));
+    SendDlgItemMessage(parent, IDC_CHECKHASH, BM_SETCHECK, BST_UNCHECKED, 0);
+    DialogProc(parent, WM_COMMAND, IDC_CHECKHASH, 0);
+    assert(!IsWindowEnabled(GetDlgItem(parent, IDC_CHECKTEXT)));
     assert(SendDlgItemMessage(parent, IDC_CHECKDIR, BM_GETCHECK, 0, 0) == BST_UNCHECKED);
     assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
     assert(DeleteFile(path) && CreateDirectory(path, NULL));
@@ -866,6 +891,62 @@ static void TestIndependentUsnOption(void)
     assert(!IsWindowEnabled(GetDlgItem(parent, IDC_EDITDIR)));
     hWnd = previousWindow;
     assert(DestroyWindow(parent) && RemoveDirectory(path));
+}
+
+static void TestTextOnlyCapture(void)
+{
+    const TCHAR* suffixes[] = { TEXT("\\binary.exe"), TEXT("\\settings.INI"),
+        TEXT("\\unknown.dat"), TEXT("\\plain") };
+    TCHAR temp[MAX_PATH], path[MAX_PATH], names[4][MAX_PATH];
+    REGSHOT shot = { 0 };
+    LPFILECONTENT entry;
+    DWORD written;
+    HANDLE file;
+    size_t i;
+    const BYTE binary[] = { 'M', 'Z', 0, 1, 2 };
+    const BYTE text[] = { 'h', 'e', 'l', 'l', 'o', '\n' };
+
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    for (i = 0; i < _countof(names); ++i) {
+        _tcscpy_s(names[i], MAX_PATH, path);
+        _tcscat_s(names[i], MAX_PATH, suffixes[i]);
+        file = CreateFile(names[i], GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        assert(file != INVALID_HANDLE_VALUE);
+        assert(WriteFile(file, i < 2 ? binary : text,
+            i < 2 ? sizeof(binary) : sizeof(text), &written, NULL));
+        assert(CloseHandle(file));
+    }
+    shot.fTextOnly = TRUE;
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    assert(!shot.fIncomplete && shot.stCounts.cFiles == 4);
+    for (i = 0; i < _countof(names); ++i) {
+        entry = FindSnapshotEntry(shot.lpHF->lpFirstFC->lpFirstSubFC, NULL, 0,
+            _tcsrchr(names[i], (TCHAR)'\\') + 1, FILE_ATTRIBUTE_NORMAL);
+        assert(entry != NULL && entry->nChkSumUnknown == (i == 0));
+    }
+    shot.fFilled = TRUE;
+    shot.stCounts.cAll = shot.stCounts.cDirs + shot.stCounts.cFiles;
+    assert(GetTempFileName(temp, TEXT("rs"), 0, hivePath));
+    SaveShot(&shot);
+    assert(!fHiveWriteFailed);
+    FreeShot(&shot);
+    assert(LoadShot(&shot));
+    entry = FindSnapshotEntry(shot.lpHF->lpFirstFC->lpFirstSubFC, NULL, 0,
+        TEXT("binary.exe"), FILE_ATTRIBUTE_NORMAL);
+    assert(entry != NULL && entry->nChkSumUnknown);
+    FreeShot(&shot);
+    assert(DeleteFile(hivePath));
+
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL);
+    for (entry = shot.lpHF->lpFirstFC->lpFirstSubFC; entry != NULL; entry = entry->lpBrotherFC)
+        assert(!entry->nChkSumUnknown);
+    FreeShot(&shot);
+    for (i = 0; i < _countof(names); ++i)
+        assert(DeleteFile(names[i]));
+    assert(RemoveDirectory(path));
 }
 
 static void TestEnumerationRecovery(void)
@@ -1388,6 +1469,8 @@ int main(int argc, char** argv)
     TestMetadataOnly();
     puts("Testing independent USN option");
     TestIndependentUsnOption();
+    puts("Testing text-only capture");
+    TestTextOnlyCapture();
     puts("Testing enumeration recovery");
     TestEnumerationRecovery();
     puts("Testing directory entry path reuse");

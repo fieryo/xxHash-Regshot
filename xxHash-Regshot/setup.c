@@ -41,6 +41,7 @@ LPTSTR lpszIniOutMaxBinaryBytes = TEXT("OutMaxBinaryBytes");
 LPTSTR lpszIniDontDisplayInfoAfterShot = TEXT("DontDisplayInfoAfterShot");
 LPTSTR lpszIniUsnIncremental = TEXT("UsnIncremental");
 LPTSTR lpszIniHashFiles = TEXT("HashFiles");
+LPTSTR lpszIniHashTextOnly = TEXT("HashTextOnly");
 
 LPTSTR lpgrszRegSkipStrings;
 LPTSTR lpgrszFileSkipStrings;
@@ -167,6 +168,8 @@ BOOL LoadSettingsFromIni(HWND hDlg) // tfx get ini info
         (WPARAM)((0 != GetPrivateProfileInt(lpszIniSetup, lpszIniUsnIncremental, 0, lpszRegshotIni)) ? BST_CHECKED : BST_UNCHECKED), (LPARAM)0);
     SendMessage(GetDlgItem(hDlg, IDC_CHECKHASH), BM_SETCHECK,
         (WPARAM)((0 != GetPrivateProfileInt(lpszIniSetup, lpszIniHashFiles, 1, lpszRegshotIni)) ? BST_CHECKED : BST_UNCHECKED), (LPARAM)0);
+    SendMessage(GetDlgItem(hDlg, IDC_CHECKTEXT), BM_SETCHECK,
+        (WPARAM)((0 != GetPrivateProfileInt(lpszIniSetup, lpszIniHashTextOnly, 0, lpszRegshotIni)) ? BST_CHECKED : BST_UNCHECKED), (LPARAM)0);
     SendMessage(hDlg, WM_COMMAND, (WPARAM)IDC_CHECKDIR, (LPARAM)0);
 #endif
 
@@ -266,6 +269,9 @@ BOOL SaveSettingsToIni(HWND hDlg) // tfx save settings to ini
         lpszRegshotIni);
     WritePrivateProfileString(lpszIniSetup, lpszIniHashFiles,
         (BST_CHECKED == SendMessage(GetDlgItem(hDlg, IDC_CHECKHASH), BM_GETCHECK, (WPARAM)0, (LPARAM)0)) ? TEXT("1") : TEXT("0"),
+        lpszRegshotIni);
+    WritePrivateProfileString(lpszIniSetup, lpszIniHashTextOnly,
+        (BST_CHECKED == SendMessage(GetDlgItem(hDlg, IDC_CHECKTEXT), BM_GETCHECK, (WPARAM)0, (LPARAM)0)) ? TEXT("1") : TEXT("0"),
         lpszRegshotIni);
 #endif
 

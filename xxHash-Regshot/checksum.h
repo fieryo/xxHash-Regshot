@@ -24,4 +24,13 @@
 #include "common.h"
 BOOL ChecksumFromFile(LPCTSTR filename, QWORD* checksum);
 
+typedef enum {
+    CHECKSUM_ERROR,
+    CHECKSUM_OK,
+    CHECKSUM_NOT_TEXT
+} CHECKSUM_RESULT;
+
+BOOL IsKnownTextExtension(LPCTSTR filename);
+CHECKSUM_RESULT ChecksumTextFile(LPCTSTR filename, QWORD* checksum);
+
 #endif
