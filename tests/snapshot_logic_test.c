@@ -934,7 +934,7 @@ static void TestEntryPathReuse(void)
     LPTSTR* previousSkips = lprgszFileSkipStrings;
     REGSHOT shot = { 0 };
     LPFILECONTENT root = NULL, entry;
-    QWORD expected;
+    QWORD expected = 0;
     size_t i;
     DWORD written;
     HANDLE file;
