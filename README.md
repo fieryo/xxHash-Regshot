@@ -11,6 +11,26 @@ XXH3 path without allocating streaming state; larger files stream through a
 256 KiB sequential-read buffer allocated only when needed.
 XXH3 is non-cryptographic and is not suitable for security verification.
 
+Enable **Text only** alongside **xxHash files** to hash recognized text and
+configuration files instead of all files. The option is off by default and
+saved as `HashTextOnly` in `regshot.ini`. Known extensions are matched
+case-insensitively and hashed in full, even if the contents look binary.
+The list in `text_extensions.h` is based on Apache httpd's public-domain
+[`mime.types`](https://github.com/apache/httpd/blob/trunk/docs/conf/mime.types)
+text, XML and JSON types plus common configuration and source extensions; it is
+not exhaustive. Compressed formats are not recognized as text by extension.
+
+For all other names, including extensionless files, the first 4 KiB are sampled:
+UTF-16/32 BOMs, BOM-less ASCII-like UTF-16, and data without binary control
+characters are treated as text and then hashed **in full**. Empty files count
+as text. This is a heuristic, not Apache's magic database: binary files with
+text-like prefixes can be hashed, and text in other encodings or with control
+characters can be missed. Files detected as non-text retain unknown hashes and
+are compared by size, timestamp and attributes only; same-size changes with
+preserved metadata can be missed. USN reuse is limited to known-text extensions
+in this mode; unrecognized names are rechecked to avoid reusing a hash from an
+earlier all-files scan without classification.
+
 When taking the **second shot** with a completed first shot still in memory
 (including a loaded shot), hashing is limited to files whose hashes could
 change that comparison. Added files, files already modified by size, write

@@ -117,6 +117,8 @@ VOID SetTextsToDefaultLanguage(VOID)
     asLangTexts[iszTextCheckUsn].nIDDlgItem = IDC_CHECKUSN;
     asLangTexts[iszTextCheckHash].lpszText = TEXT("&xxHash files");
     asLangTexts[iszTextCheckHash].nIDDlgItem = IDC_CHECKHASH;
+    asLangTexts[iszTextCheckText].lpszText = TEXT("&Text only");
+    asLangTexts[iszTextCheckText].nIDDlgItem = IDC_CHECKTEXT;
 
     asLangTexts[iszTextMenuShot].lpszText = TEXT("&Shot");
     asLangTexts[iszTextMenuShotSave].lpszText = TEXT("Shot and Sa&ve...");
