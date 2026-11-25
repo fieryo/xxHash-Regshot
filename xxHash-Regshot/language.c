@@ -119,6 +119,8 @@ VOID SetTextsToDefaultLanguage(VOID)
     asLangTexts[iszTextCheckHash].nIDDlgItem = IDC_CHECKHASH;
     asLangTexts[iszTextCheckText].lpszText = TEXT("&Text only");
     asLangTexts[iszTextCheckText].nIDDlgItem = IDC_CHECKTEXT;
+    asLangTexts[iszTextButtonDefender].lpszText = TEXT("&Defender settings...");
+    asLangTexts[iszTextButtonDefender].nIDDlgItem = IDC_DEFENDER;
 
     asLangTexts[iszTextMenuShot].lpszText = TEXT("&Shot");
     asLangTexts[iszTextMenuShotSave].lpszText = TEXT("Shot and Sa&ve...");

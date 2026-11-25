@@ -676,6 +676,7 @@ enum eLangTexts {
     iszTextCheckHash,
     iszTextCheckText,
     iszTextErrorWriteReport,
+    iszTextButtonDefender,
     // ATTENTION: add new language strings before this line, the last line is used to determine the count
     cLangStrings
 };

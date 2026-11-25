@@ -495,7 +495,12 @@ static void TestRegistryAvailability(void)
     assert(RegDeleteKey(registryRoot, TEXT("Visible")) == ERROR_SUCCESS);
     GetRegistrySnap(&after, registryRoot, lpszHKLMShort, NULL, &after.lpHKLM);
     CompareRegKeys(before.lpHKLM, after.lpHKLM);
-    assert(CompareResult.stcDeleted.cKeys == 3 && CompareResult.stcDeleted.cValues == 2);
+    assert(CompareResult.stcDeleted.cKeys == 1 && CompareResult.stcDeleted.cValues == 1);
+    FreeCompareResult();
+    ClearRegKeyMatchFlags(before.lpHKLM);
+    ClearRegKeyMatchFlags(after.lpHKLM);
+    CompareRegKeys(after.lpHKLM, before.lpHKLM);
+    assert(CompareResult.stcAdded.cKeys == 1 && CompareResult.stcAdded.cValues == 1);
     FreeCompareResult();
     FreeShot(&before);
     FreeShot(&after);

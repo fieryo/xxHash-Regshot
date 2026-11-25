@@ -481,6 +481,12 @@ BOOL CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
             }
             break;
 
+        case IDC_DEFENDER:  // Button: open Windows Security virus & threat protection settings
+            if ((INT_PTR)ShellExecute(hDlg, TEXT("open"), TEXT("windowsdefender://threatsettings/"), NULL, NULL, SW_SHOWNORMAL) <= 32) {
+                MessageBox(hDlg, TEXT("Could not open Windows Security settings."), asLangTexts[iszTextError].lpszText, MB_ICONERROR);
+            }
+            return(TRUE);
+
         case IDC_ABOUT: {  // Button: About
             LPTSTR   lpszAboutBox;
             //_asm int 3;
