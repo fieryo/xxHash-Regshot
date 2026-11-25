@@ -57,6 +57,9 @@ Windows debugger output and likewise leave the hash unknown.
 xxHash is distributed under the BSD 2-Clause license; see
 `xxHash-Regshot/third_party/xxhash/LICENSE`.
 
+Unicode HTML comparison reports are encoded as UTF-16LE with a byte-order mark,
+so browsers can detect their encoding before reading the HTML.
+
 ## Windows x64 build
 
 The Windows build workflow runs on pushes, pull requests, or manually from

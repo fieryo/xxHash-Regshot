@@ -1221,7 +1221,14 @@ BOOL OutputComparisonResult(VOID)
     }
 
     if (fAsHTML) {
-        WriteHTMLBegin();
+        if (!WriteHTMLBegin()) {
+            CloseHandle(hFile);
+            MYFREE(lpszBuffer);
+            MYFREE(lpszDestFileName);
+            UI_ShowHideProgressBar(SW_HIDE);
+            ErrMsg(asLangTexts[iszTextErrorWriteReport].lpszText);
+            return FALSE;
+        }
     }
     else {
         WriteFile(hFile, lpszProgramName, (DWORD)(_tcslen(lpszProgramName) * sizeof(TCHAR)), &NBW, NULL);

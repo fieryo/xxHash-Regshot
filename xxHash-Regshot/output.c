@@ -245,8 +245,14 @@ VOID WriteTitle(LPTSTR lpszTitle, LPTSTR lpszValue, BOOL fAsHTML)
 }
 
 // ----------------------------------------------------------------------
-VOID WriteHTMLBegin(void)
+BOOL WriteHTMLBegin(void)
 {
+#ifdef _UNICODE
+    static const BYTE bom[] = { 0xff, 0xfe };
+
+    if (!WriteFile(hFile, bom, sizeof(bom), &NBW, NULL) || NBW != sizeof(bom))
+        return FALSE;
+#endif
     WriteFile(hFile, lpszHTMLBegin, (DWORD)(_tcslen(lpszHTMLBegin) * sizeof(TCHAR)), &NBW, NULL);
     WriteFile(hFile, lpszHTMLHeadBegin, (DWORD)(_tcslen(lpszHTMLHeadBegin) * sizeof(TCHAR)), &NBW, NULL);
     WriteFile(hFile, lpszHTML_CType, (DWORD)(_tcslen(lpszHTML_CType) * sizeof(TCHAR)), &NBW, NULL);
@@ -257,6 +263,7 @@ VOID WriteHTMLBegin(void)
     WriteFile(hFile, lpszHTMLWebSiteBegin, (DWORD)(_tcslen(lpszHTMLWebSiteBegin) * sizeof(TCHAR)), &NBW, NULL);
     WriteFile(hFile, lpszProgramName, (DWORD)(_tcslen(lpszProgramName) * sizeof(TCHAR)), &NBW, NULL);
     WriteFile(hFile, lpszHTMLWebSiteEnd, (DWORD)(_tcslen(lpszHTMLWebSiteEnd) * sizeof(TCHAR)), &NBW, NULL);
+    return TRUE;
 }
 
 // ----------------------------------------------------------------------
