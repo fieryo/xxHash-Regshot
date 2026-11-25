@@ -1,9 +1,11 @@
 #include "../xxHash-Regshot/checksum.h"
 #include "../xxHash-Regshot/third_party/xxhash/xxhash.h"
+#include <assert.h>
 #include <stdio.h>
 
 static int readCalls, allocationCalls, failReadCall;
 static BOOL failAllocation;
+static DWORD firstReadSize;
 
 static QWORD ExpectedChecksum(const unsigned char* data, DWORD size)
 {
@@ -13,6 +15,8 @@ static QWORD ExpectedChecksum(const unsigned char* data, DWORD size)
 static BOOL WINAPI CountReadFile(HANDLE file, LPVOID buffer, DWORD size,
     LPDWORD bytesRead, LPOVERLAPPED overlapped)
 {
+    if (readCalls == 0)
+        firstReadSize = size;
     if (++readCalls == failReadCall) {
         SetLastError(ERROR_READ_FAULT);
         return FALSE;
@@ -31,6 +35,97 @@ static LPVOID WINAPI CountHeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)
 #include "../xxHash-Regshot/checksum.c"
 #undef ReadFile
 #undef HeapAlloc
+
+static int TestTextFile(LPCTSTR path, const unsigned char* data, DWORD size,
+    CHECKSUM_RESULT expected, DWORD expectedFirstRead)
+{
+    DWORD written;
+    QWORD hash = 123;
+    HANDLE file = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECKSUM_RESULT result;
+
+    if (file == INVALID_HANDLE_VALUE)
+        return 0;
+    if (!WriteFile(file, data, size, &written, NULL) || written != size) {
+        CloseHandle(file);
+        return 0;
+    }
+    CloseHandle(file);
+    readCalls = allocationCalls = 0;
+    result = ChecksumTextFile(path, &hash);
+    return result == expected && firstReadSize == expectedFirstRead
+        && (expected == CHECKSUM_OK ? hash == ExpectedChecksum(data, size) : hash == 123)
+        && (expected != CHECKSUM_NOT_TEXT || (readCalls == 1 && allocationCalls == 0));
+}
+
+static int TestTextDetection(LPCTSTR directory)
+{
+    TCHAR path[MAX_PATH], workdir[MAX_PATH];
+    static unsigned char large[256 * 1024 + 19];
+    const unsigned char binary[] = { 'M', 'Z', 0, 1, 2, 3 };
+    const unsigned char utf16le[] = { 0xff, 0xfe, 'a', 0, '\n', 0 };
+    const unsigned char utf16be[] = { 0xfe, 0xff, 0, 'a' };
+    const unsigned char utf32le[] = { 0xff, 0xfe, 0, 0, 'a', 0, 0, 0 };
+    const unsigned char utf32be[] = { 0, 0, 0xfe, 0xff, 0, 0, 0, 'a' };
+    const unsigned char utf16NoBom[] = { 'a', 0, 'b', 0, '\n', 0 };
+    const unsigned char utf8[] = { 0xef, 0xbb, 0xbf, 't', 'e', 'x', 't', '\n' };
+    const unsigned char control[] = { 't', 'e', 'x', 't', 1 };
+    size_t i;
+    int ok;
+
+    assert(IsKnownTextExtension(TEXT("C:\\dir.with.dot\\SETTINGS.INI")));
+    assert(IsKnownTextExtension(TEXT("C:\\dir\\.gitignore")));
+    assert(!IsKnownTextExtension(TEXT("C:\\dir.ini\\extensionless")));
+    assert(!IsKnownTextExtension(TEXT("binary.exe")));
+    assert(!IsKnownTextExtension(TEXT("image.svgz")));
+    if (!GetTempFileName(directory, TEXT("txt"), 0, workdir)
+        || !DeleteFile(workdir) || !CreateDirectory(workdir, NULL))
+        return 0;
+    _tcscpy_s(path, MAX_PATH, workdir);
+    _tcscat_s(path, MAX_PATH, TEXT("\\test.ini"));
+    ok = TestTextFile(path, binary, sizeof(binary), CHECKSUM_OK, SMALL_FILE_BUFFER_SIZE + 1);
+    if (!DeleteFile(path))
+        return 0;
+    _tcscpy_s(path, MAX_PATH, workdir);
+    _tcscat_s(path, MAX_PATH, TEXT("\\test.unknown"));
+    memset(large, 'x', sizeof(large));
+    ok = ok && TestTextFile(path, large, sizeof(large), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, large, TEXT_SAMPLE_SIZE, CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, large, SMALL_FILE_BUFFER_SIZE, CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, large, SMALL_FILE_BUFFER_SIZE + 1, CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, binary, sizeof(binary), CHECKSUM_NOT_TEXT, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, control, sizeof(control), CHECKSUM_NOT_TEXT, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, utf16le, sizeof(utf16le), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, utf16be, sizeof(utf16be), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, utf32le, sizeof(utf32le), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, utf32be, sizeof(utf32be), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, utf16NoBom, sizeof(utf16NoBom), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, utf8, sizeof(utf8), CHECKSUM_OK, TEXT_SAMPLE_SIZE)
+        && TestTextFile(path, large, 0, CHECKSUM_OK, TEXT_SAMPLE_SIZE);
+    large[3] = 0;
+    large[4] = 1;
+    ok = ok && TestTextFile(path, large, sizeof(large), CHECKSUM_NOT_TEXT, TEXT_SAMPLE_SIZE);
+    {
+        QWORD hash = 123;
+        readCalls = 0;
+        failReadCall = 1;
+        ok = ok && ChecksumTextFile(path, &hash) == CHECKSUM_ERROR && hash == 123;
+        failReadCall = 0;
+    }
+    if (!DeleteFile(path))
+        return 0;
+    _tcscpy_s(path, MAX_PATH, workdir);
+    _tcscat_s(path, MAX_PATH, TEXT("\\extensionless"));
+    ok = ok && TestTextFile(path, utf8, sizeof(utf8), CHECKSUM_OK, TEXT_SAMPLE_SIZE);
+    if (!DeleteFile(path))
+        return 0;
+    if (!RemoveDirectory(workdir))
+        return 0;
+    for (i = 1; i < sizeof(textExtensions) / sizeof(textExtensions[0]); ++i)
+        assert(_tcsicmp(textExtensions[i - 1], textExtensions[i]) < 0);
+    return ok;
+}
 
 static int TestSize(LPCTSTR path, const unsigned char* data, DWORD size)
 {
@@ -141,6 +236,7 @@ int main(int argc, char** argv)
         && TestSize(path, data, 256 * 1024)
         && TestSize(path, data, 256 * 1024 + 1)
         && TestSize(path, data, sizeof(data));
+    ok = ok && TestTextDetection(directory);
     for (failReadCall = 1; failReadCall <= 3; ++failReadCall) {
         readCalls = 0;
         hash = 123;

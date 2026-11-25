@@ -57,6 +57,9 @@
     <ClInclude Include="usnsnapshot.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="text_extensions.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="third_party\xxhash\xxhash.h">
       <Filter>Header Files</Filter>
     </ClInclude>
