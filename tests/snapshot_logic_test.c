@@ -750,6 +750,18 @@ static void TestMetadataOnly(void)
     shot.lpUsnSnapshot = NULL;
     FreeShot(&shot);
 
+    shot.lpHF = MYALLOC0(sizeof(HEADFILE));
+    shot.lpUsnSnapshot = &snapshot;
+    hashCalls = reuseCalls = 0;
+    GetFilesSnapAgainst(&shot, path, NULL, &shot.lpHF->lpFirstFC, NULL, NULL, TRUE);
+    assert(!shot.fIncomplete && hashCalls == 0 && reuseCalls == 0);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->nChkSumUnknown);
+    assert(shot.lpHF->lpFirstFC->lpFirstSubFC->fUsnFlags == 0);
+    FinishUsnScan(&shot);
+    assert(CollectUsnEntries(shot.lpHF->lpFirstFC, NULL, 0) == 0);
+    shot.lpUsnSnapshot = NULL;
+    FreeShot(&shot);
+
     shot.fMetadataOnly = TRUE;
     shot.lpHF = MYALLOC0(sizeof(HEADFILE));
     shot.lpUsnSnapshot = &snapshot;
@@ -996,6 +1008,180 @@ static void TestEntryPathReuse(void)
     assert(RemoveDirectory(child) && RemoveDirectory(path));
 }
 
+static void CaptureTestFiles(LPREGSHOT shot, LPTSTR path)
+{
+    shot->lpHF = MYALLOC0(sizeof(HEADFILE));
+    GetFilesSnap(shot, path, NULL, &shot->lpHF->lpFirstFC, NULL);
+    assert(!shot->fIncomplete);
+    shot->stCounts.cAll = shot->stCounts.cFiles + shot->stCounts.cDirs;
+    shot->fFilled = TRUE;
+}
+
+static void WriteTestFile(LPCTSTR path, const char* text, const FILECONTENT* before)
+{
+    DWORD written, size = (DWORD)strlen(text);
+    HANDLE file = CreateFile(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    assert(file != INVALID_HANDLE_VALUE);
+    assert(WriteFile(file, text, size, &written, NULL) && written == size);
+    if (before != NULL) {
+        FILETIME time;
+
+        time.dwLowDateTime = before->nWriteDateTimeLow;
+        time.dwHighDateTime = before->nWriteDateTimeHigh;
+        assert(SetFileTime(file, NULL, NULL, &time));
+    }
+    assert(CloseHandle(file));
+}
+
+static void TestSecondSnapshotHashing(void)
+{
+    const TCHAR* suffixes[] = {
+        TEXT("\\stable"), TEXT("\\same-size"), TEXT("\\size"),
+        TEXT("\\date"), TEXT("\\attributes"), TEXT("\\unknown"),
+        TEXT("\\child\\file-\x03A9"), TEXT("\\deleted"), TEXT("\\added")
+    };
+    TCHAR temp[MAX_PATH], path[MAX_PATH], child[MAX_PATH], names[9][MAX_PATH];
+    LPFILECONTENT root, before, after;
+    REGSHOT full = { 0 };
+    NAMEINDEXENTRY* index;
+    size_t i, count;
+    QWORD stableHash;
+
+    assert(!Shot1.fFilled && !Shot2.fFilled);
+    assert(GetTempPath(MAX_PATH, temp) && GetTempFileName(temp, TEXT("rs"), 0, path));
+    assert(DeleteFile(path) && CreateDirectory(path, NULL));
+    _tcscpy_s(child, MAX_PATH, path);
+    _tcscat_s(child, MAX_PATH, TEXT("\\child"));
+    assert(CreateDirectory(child, NULL));
+    for (i = 0; i < _countof(names); ++i) {
+        _tcscpy_s(names[i], MAX_PATH, path);
+        _tcscat_s(names[i], MAX_PATH, suffixes[i]);
+        if (i != 8)
+            WriteTestFile(names[i], "before", NULL);
+    }
+    hashCalls = 0;
+    CaptureTestFiles(&Shot1, path);
+    assert(hashCalls == 8);
+    root = Shot1.lpHF->lpFirstFC;
+    before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, TEXT("unknown"), FILE_ATTRIBUTE_NORMAL);
+    assert(before != NULL);
+    before->nChkSumUnknown = TRUE;
+    assert(GetTempFileName(temp, TEXT("rs"), 0, hivePath));
+    SaveShot(&Shot1);
+    assert(!fHiveWriteFailed);
+    FreeShot(&Shot1);
+    assert(LoadShot(&Shot1) && Shot1.fLoaded);
+    root = Shot1.lpHF->lpFirstFC;
+    before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, TEXT("stable"), FILE_ATTRIBUTE_NORMAL);
+    assert(before != NULL && !before->nChkSumUnknown);
+    stableHash = before->nChkSum;
+    _tcsupr_s(before->lpszFileName, before->cchFileName + 1);
+    for (before = root->lpFirstSubFC; before != NULL; before = before->lpBrotherFC)
+        before->fFileMatch = ISMATCH;
+    failAllocationAfter = 0;
+    index = IndexFiles(root->lpFirstSubFC, &count, FALSE);
+    failAllocationAfter = -1;
+    assert(index == NULL && count > 1);
+    assert(FindSnapshotEntry(root->lpFirstSubFC, index, count, TEXT("stable"),
+        FILE_ATTRIBUTE_NORMAL) != NULL);
+
+    before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, TEXT("same-size"), FILE_ATTRIBUTE_NORMAL);
+    WriteTestFile(names[1], "AFTER!", before);
+    WriteTestFile(names[2], "a larger file", NULL);
+    before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, TEXT("date"), FILE_ATTRIBUTE_NORMAL);
+    {
+        FILECONTENT changed = *before;
+
+        changed.nWriteDateTimeHigh++;
+        WriteTestFile(names[3], "before", &changed);
+    }
+    before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, TEXT("attributes"), FILE_ATTRIBUTE_NORMAL);
+    assert(SetFileAttributes(names[4], before->nFileAttributes ^ FILE_ATTRIBUTE_HIDDEN));
+    before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, TEXT("child"), FILE_ATTRIBUTE_DIRECTORY);
+    WriteTestFile(names[6], "AFTER!", before->lpFirstSubFC);
+    assert(DeleteFile(names[7]));
+    WriteTestFile(names[8], "new", NULL);
+
+    hashCalls = 0;
+    CaptureTestFiles(&Shot2, path);
+    assert(hashCalls == 3 && Shot2.stCounts.cFiles == 8);
+    for (i = 0; i < _countof(names); ++i) {
+        const TCHAR* name = _tcsrchr(names[i], (TCHAR)'\\') + 1;
+        LPFILECONTENT siblings = Shot2.lpHF->lpFirstFC->lpFirstSubFC;
+
+        if (i == 6) {
+            after = FindSnapshotEntry(siblings, NULL, 0, TEXT("child"), FILE_ATTRIBUTE_DIRECTORY);
+            siblings = after->lpFirstSubFC;
+        }
+        after = FindSnapshotEntry(siblings, NULL, 0, name, FILE_ATTRIBUTE_NORMAL);
+        if (i == 7) {
+            assert(after == NULL);
+            continue;
+        }
+        assert(after != NULL);
+        assert(after->nChkSumUnknown == (i != 0 && i != 1 && i != 6));
+        if (i == 0)
+            assert(after->nChkSum == stableHash);
+        if (i == 1) {
+            before = FindSnapshotEntry(root->lpFirstSubFC, NULL, 0, name, FILE_ATTRIBUTE_NORMAL);
+            assert(after->nChkSum != before->nChkSum);
+        }
+    }
+    ClearHeadFileMatchFlags(Shot1.lpHF);
+    CompareHeadFiles(Shot1.lpHF, Shot2.lpHF);
+    assert(CompareResult.stcModified.cFiles == 5 && CompareResult.stcAdded.cFiles == 1
+        && CompareResult.stcDeleted.cFiles == 1);
+    FreeCompareResult();
+    hashCalls = 0;
+    CaptureTestFiles(&full, path);
+    assert(hashCalls == 8);
+    ClearHeadFileMatchFlags(Shot1.lpHF);
+    CompareHeadFiles(Shot1.lpHF, full.lpHF);
+    assert(CompareResult.stcModified.cFiles == 5 && CompareResult.stcAdded.cFiles == 1
+        && CompareResult.stcDeleted.cFiles == 1);
+    FreeCompareResult();
+    FreeShot(&full);
+    SaveShot(&Shot2);
+    assert(!fHiveWriteFailed);
+    FreeShot(&Shot2);
+    assert(LoadShot(&Shot2));
+    after = FindSnapshotEntry(Shot2.lpHF->lpFirstFC->lpFirstSubFC, NULL, 0,
+        TEXT("size"), FILE_ATTRIBUTE_NORMAL);
+    assert(after != NULL && after->nChkSumUnknown);
+    FreeShot(&Shot2);
+    Shot1.fFilled = FALSE;
+    hashCalls = 0;
+    CaptureTestFiles(&Shot2, path);
+    assert(hashCalls == 8);
+    FreeShot(&Shot2);
+    FreeShot(&Shot1);
+
+    CaptureTestFiles(&Shot1, names[0]);
+    hashCalls = 0;
+    CaptureTestFiles(&Shot2, names[0]);
+    assert(hashCalls == 1 && !Shot2.lpHF->lpFirstFC->nChkSumUnknown);
+    FreeShot(&Shot2);
+    Shot1.lpHF->lpFirstFC->nFileSizeHigh++;
+    hashCalls = 0;
+    CaptureTestFiles(&Shot2, names[0]);
+    assert(hashCalls == 0 && Shot2.lpHF->lpFirstFC->nChkSumUnknown);
+    FreeShot(&Shot2);
+    hashCalls = 0;
+    CaptureTestFiles(&Shot2, names[8]);
+    assert(hashCalls == 0 && Shot2.lpHF->lpFirstFC->nChkSumUnknown);
+    FreeShot(&Shot2);
+    FreeShot(&Shot1);
+    assert(DeleteFile(hivePath));
+    for (i = 0; i < _countof(names); ++i) {
+        if (i != 7) {
+            assert(SetFileAttributes(names[i], FILE_ATTRIBUTE_NORMAL));
+            assert(DeleteFile(names[i]));
+        }
+    }
+    assert(RemoveDirectory(child) && RemoveDirectory(path));
+}
+
 static void TestSkippedComparison(void)
 {
     FILECONTENT before = { 0 }, after = { 0 }, child = { 0 };
@@ -1206,6 +1392,8 @@ int main(int argc, char** argv)
     TestEnumerationRecovery();
     puts("Testing directory entry path reuse");
     TestEntryPathReuse();
+    puts("Testing selective second-snapshot hashing");
+    TestSecondSnapshotHashing();
     puts("Testing skipped-directory comparisons");
     TestSkippedComparison();
     puts("Testing skipped-directory save/load");

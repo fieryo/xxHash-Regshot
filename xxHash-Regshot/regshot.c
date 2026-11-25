@@ -835,7 +835,7 @@ LPVOID FindNameIndex(NAMEINDEXENTRY* entries, size_t count, LPCTSTR name, DWORD 
     }
     for (; low < count && entries[low].type == type
         && CompareIndexNames(entries[low].name, name) == 0; ++low) {
-        if (*entries[low].match == NOMATCH)
+        if (entries[low].match == NULL || *entries[low].match == NOMATCH)
             return entries[low].content;
     }
     return NULL;

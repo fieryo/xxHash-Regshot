@@ -11,6 +11,21 @@ XXH3 path without allocating streaming state; larger files stream through a
 256 KiB sequential-read buffer allocated only when needed.
 XXH3 is non-cryptographic and is not suitable for security verification.
 
+When taking the **second shot** with a completed first shot still in memory
+(including a loaded shot), hashing is limited to files whose hashes could
+change that comparison. Added files, files already modified by size, write
+time, or attributes, and files without a valid first-shot hash are not hashed.
+Matching files with identical metadata still need hashing (or validated USN
+hash reuse), so same-size content changes with preserved timestamps remain
+detectable. Directory-local sorted name indexes provide fast case-insensitive
+lookups without rebuilding full paths. No administrator rights are needed.
+
+Skipped hashes are saved as **unknown**, never copied from the first shot.
+The second shot remains a complete metadata capture, but is not a fully hashed
+baseline for future comparisons. To obtain a fully hashed independent capture,
+take it in the first-shot slot with **xxHash files** enabled. With no completed
+first shot, the second-shot slot also hashes normally.
+
 New hive files store hashes and directory scan status in file-content version 4
 and registry scan status in key-content version 3.
 They require this updated application; older builds reject these snapshots.
@@ -145,9 +160,11 @@ size, write time, attributes, and XXH3 hash). Saving a snapshot that was not
 taken in USN mode, or a failed save, deletes it. Changes made while the volume
 was not journaling (for example, offline edits from another OS) can only be
 detected through size and write time.
-With hashing enabled, the first shot has no hashes to reuse and must read every
+With hashing enabled and no saved USN baseline, the first shot must read every
 accessible file's contents; USN incremental mode speeds up later shots after a
-successful save.
+successful save. Second-shot comparison filtering also applies in USN mode:
+unneeded hashes are neither computed nor reused, and are omitted from the saved
+USN hash cache.
 Initial full-drive time is therefore still limited by disk throughput,
 file count, and antivirus scanning, not just hash computation.
 
