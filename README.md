@@ -20,7 +20,14 @@ The list in `text_extensions.h` is based on Apache httpd's public-domain
 text, XML and JSON types plus common configuration and source extensions; it is
 not exhaustive. Compressed formats are not recognized as text by extension.
 
-For all other names, including extensionless files, the first 4 KiB are sampled:
+Common binary extensions (executables, libraries, archives, images, media,
+fonts, databases and Office documents) are skipped **without opening or reading
+the file** in text-only mode. The list is in `checksum.c`; `.dat` remains
+unclassified because it can contain either text or binary data. Text disguised
+with a listed binary extension is intentionally not hashed. Turning **Text only**
+off retains full hashing of these files.
+
+For remaining names, including extensionless files, the first 4 KiB are sampled:
 UTF-16/32 BOMs, BOM-less ASCII-like UTF-16, and data without binary control
 characters are treated as text and then hashed **in full**. Empty files count
 as text. This is a heuristic, not Apache's magic database: binary files with
