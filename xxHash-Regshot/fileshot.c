@@ -163,7 +163,7 @@ VOID FreeAllHeadFiles(LPHEADFILE lpHF)
 //-------------------------------------------------------------
 // File comparison engine
 //-------------------------------------------------------------
-static NAMEINDEXENTRY* IndexFiles(LPFILECONTENT first, size_t* count)
+static NAMEINDEXENTRY* IndexFiles(LPFILECONTENT first, size_t* count, BOOL unmatchedOnly)
 {
     LPFILECONTENT file;
     NAMEINDEXENTRY* entries;
@@ -178,7 +178,7 @@ static NAMEINDEXENTRY* IndexFiles(LPFILECONTENT first, size_t* count)
             entries[i].name = file->lpszFileName;
             entries[i].type = ISFILE(file->nFileAttributes);
             entries[i].content = file;
-            entries[i].match = &file->fFileMatch;
+            entries[i].match = unmatchedOnly ? &file->fFileMatch : NULL;
             entries[i].order = i;
         }
         SortNameIndex(entries, *count);
@@ -186,12 +186,21 @@ static NAMEINDEXENTRY* IndexFiles(LPFILECONTENT first, size_t* count)
     return entries;
 }
 
+static BOOL SameFileMetadata(const FILECONTENT* before, const FILECONTENT* after)
+{
+    return before->nWriteDateTimeLow == after->nWriteDateTimeLow
+        && before->nWriteDateTimeHigh == after->nWriteDateTimeHigh
+        && before->nFileSizeLow == after->nFileSizeLow
+        && before->nFileSizeHigh == after->nFileSizeHigh
+        && before->nFileAttributes == after->nFileAttributes;
+}
+
 VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
 {
     LPFILECONTENT lpFC1;
     LPFILECONTENT lpFC2;
     size_t fileCount = 0;
-    NAMEINDEXENTRY* fileIndex = lpStartFC1 != NULL ? IndexFiles(lpStartFC2, &fileCount) : NULL;
+    NAMEINDEXENTRY* fileIndex = lpStartFC1 != NULL ? IndexFiles(lpStartFC2, &fileCount, TRUE) : NULL;
 
     // Compare dirs/files
     for (lpFC1 = lpStartFC1; NULL != lpFC1; lpFC1 = lpFC1->lpBrotherFC) {
@@ -221,11 +230,7 @@ VOID CompareFiles(LPFILECONTENT lpStartFC1, LPFILECONTENT lpStartFC2)
             // Same file type and (case-insensitive) name of FC1 found in FC2, so compare their attributes and if applicable their dates and sizes
             if (ISFILE(lpFC1->nFileAttributes)) {
                 // Both are files
-                if ((lpFC1->nWriteDateTimeLow == lpFC2->nWriteDateTimeLow)
-                    && (lpFC1->nWriteDateTimeHigh == lpFC2->nWriteDateTimeHigh)
-                    && (lpFC1->nFileSizeLow == lpFC2->nFileSizeLow)
-                    && (lpFC1->nFileSizeHigh == lpFC2->nFileSizeHigh)
-                    && (lpFC1->nFileAttributes == lpFC2->nFileAttributes)
+                if (SameFileMetadata(lpFC1, lpFC2)
                     && (lpFC1->nChkSumUnknown || lpFC2->nChkSumUnknown || lpFC1->nChkSum == lpFC2->nChkSum)) {
                     if (lpFC1->nChkSumUnknown && !lpFC2->nChkSumUnknown) {
                         lpFC2->fFileMatch = WASUNKNOWNBEFORE;
@@ -400,8 +405,31 @@ static VOID MarkDirectorySkipped(LPREGSHOT lpShot, LPFILECONTENT lpFC, DWORD err
     OutputDebugString(TEXT("\n"));
 }
 
-// lpParentDir: enumerator of a parent on the same volume (non-reparse child), or NULL
-static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherFC, LPFILECONTENT* lplpCaller, const SNAPSHOT_DIR* lpParentDir)
+static BOOL NeedsSnapshotHash(LPREGSHOT shot, LPFILECONTENT before, LPFILECONTENT after,
+    BOOL comparisonOnly)
+{
+    return !shot->fMetadataOnly && (!comparisonOnly
+        || (before != NULL && ISFILE(before->nFileAttributes)
+            && !before->nChkSumUnknown && SameFileMetadata(before, after)));
+}
+
+static LPFILECONTENT FindSnapshotEntry(LPFILECONTENT first, NAMEINDEXENTRY* index,
+    size_t count, LPCTSTR name, DWORD attributes)
+{
+    if (index != NULL)
+        return FindNameIndex(index, count, name, ISFILE(attributes));
+    for (; first != NULL; first = first->lpBrotherFC) {
+        if (ISFILE(first->nFileAttributes) == ISFILE(attributes)
+            && first->lpszFileName != NULL && _tcsicmp(first->lpszFileName, name) == 0)
+            return first;
+    }
+    return NULL;
+}
+
+// lpBaseline is the corresponding node in the first shot, not a live-file hash cache.
+static VOID GetFilesSnapAgainst(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherFC,
+    LPFILECONTENT* lplpCaller, const SNAPSHOT_DIR* lpParentDir,
+    LPFILECONTENT lpBaseline, BOOL fComparisonOnly)
 {
     LPFILECONTENT lpFC;
     HANDLE hFile;
@@ -412,6 +440,9 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     DWORD cFilesBefore, cDirsBefore, cSkippedBefore;
     LPTSTR lpszEntryPath;
     size_t cchEntryPrefix;
+    LPFILECONTENT lpBaselineChildren = NULL;
+    NAMEINDEXENTRY* baselineIndex = NULL;
+    size_t baselineCount = 0;
 
     // Full dir/file name is already given
 
@@ -549,7 +580,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
             lpFatherFC->nFileSizeHigh = FindData.nFileSizeHigh;
             lpFatherFC->nFileAttributes = FindData.dwFileAttributes;
             lpFatherFC->nChkSumUnknown = TRUE;
-            if (ISFILE(lpFatherFC->nFileAttributes) && !lpShot->fMetadataOnly) {
+            if (ISFILE(lpFatherFC->nFileAttributes)
+                && NeedsSnapshotHash(lpShot, lpBaseline, lpFatherFC, fComparisonOnly)) {
                 lpFatherFC->nChkSumUnknown = !ChecksumFromFile(lpszFullName, &lpFatherFC->nChkSum);
                 if (lpFatherFC->nChkSumUnknown) {
                     OutputDebugString(TEXT("Could not hash file: "));
@@ -623,11 +655,19 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     }
     cchEntryPrefix = _tcslen(lpszEntryPath);
     lpszEntryPath[cchEntryPrefix++] = (TCHAR)'\\';
+    if (fComparisonOnly && !lpShot->fMetadataOnly && lpBaseline != NULL
+        && ISDIR(lpBaseline->nFileAttributes) && lpBaseline->nScanError == 0) {
+        lpBaselineChildren = lpBaseline->lpFirstSubFC;
+        baselineIndex = IndexFiles(lpBaselineChildren, &baselineCount, FALSE);
+    }
     cFilesBefore = lpShot->stCounts.cFiles;
     cDirsBefore = lpShot->stCounts.cDirs;
     cSkippedBefore = lpShot->cSkippedDirs;
     // b) process entry then find next
     do {
+        LPFILECONTENT lpBefore;
+        BOOL fNeedHash;
+
         // Check if file is to be generic excluded
         if ((NULL == FindData.cFileName)
             || (((TCHAR)'.' == FindData.cFileName[0])  // fast exclusion for 99% of the cases
@@ -677,6 +717,9 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         lpFC->nFileSizeHigh = FindData.nFileSizeHigh;
         lpFC->nFileAttributes = FindData.dwFileAttributes;
         lpFC->nChkSumUnknown = TRUE;
+        lpBefore = FindSnapshotEntry(lpBaselineChildren, baselineIndex, baselineCount,
+            FindData.cFileName, FindData.dwFileAttributes);
+        fNeedHash = NeedsSnapshotHash(lpShot, lpBefore, lpFC, fComparisonOnly);
         if (ISFILE(FindData.dwFileAttributes)) {
             BOOL fCacheable = FALSE;
 
@@ -686,7 +729,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
 
                 lpFC->nFileId = nFileId;
                 lpFC->nUsnVolume = nUsnVolume;
-                if (!lpShot->fMetadataOnly) {
+                if (fNeedHash) {
                     fCacheable = UsnSnapshotCanCache(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, FindData.dwFileAttributes);
                     if (UsnSnapshotReuseHash(lpShot->lpUsnSnapshot, nUsnVolume, nFileId, nSize, nWriteTime, FindData.dwFileAttributes, &lpFC->nChkSum)) {
                         lpFC->nChkSumUnknown = FALSE;
@@ -694,7 +737,7 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                     }
                 }
             }
-            if (!lpShot->fMetadataOnly && !(lpFC->fUsnFlags & USNFC_REUSED)) {
+            if (fNeedHash && !(lpFC->fUsnFlags & USNFC_REUSED)) {
                 lpFC->nChkSumUnknown = !ChecksumFromFile(lpszEntryPath, &lpFC->nChkSum);
                 if (lpFC->nChkSumUnknown) {
                     OutputDebugString(TEXT("Could not hash file: "));
@@ -725,7 +768,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                 MarkDirectorySkipped(lpShot, lpFC, ERROR_CANT_ACCESS_FILE);
             }
             else {
-                GetFilesSnap(lpShot, lpszEntryPath, lpFC, &lpFC->lpFirstSubFC, &sDir);
+                GetFilesSnapAgainst(lpShot, lpszEntryPath, lpFC, &lpFC->lpFirstSubFC, &sDir,
+                    lpBefore, fComparisonOnly);
             }
         }
 
@@ -736,6 +780,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
         DWORD error = GetLastError();
         BOOL retry = sDir.ids && error != ERROR_NO_MORE_FILES;
 
+        if (baselineIndex != NULL)
+            MYFREE(baselineIndex);
         MYFREE(lpszEntryPath);
         SnapshotDirClose(&sDir);
         if (retry) {
@@ -755,7 +801,8 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
                 return;
             }
             OutputDebugString(TEXT("File snapshot: ID enumeration failed; restarting directory with classic enumeration.\n"));
-            GetFilesSnap(lpShot, path, lpFatherFC, &lpFatherFC->lpFirstSubFC, &classicParent);
+            GetFilesSnapAgainst(lpShot, path, lpFatherFC, &lpFatherFC->lpFirstSubFC, &classicParent,
+                lpBaseline, fComparisonOnly);
             MYFREE(path);
         }
         else if (DirectoryUnavailable(error)) {
@@ -773,7 +820,15 @@ static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lp
     }
 }
 
+static VOID GetFilesSnap(LPREGSHOT lpShot, LPTSTR lpszFullName, LPFILECONTENT lpFatherFC,
+    LPFILECONTENT* lplpCaller, const SNAPSHOT_DIR* lpParentDir)
+{
+    BOOL comparisonOnly = lpShot == &Shot2 && Shot1.fFilled && !Shot1.fIncomplete;
+    LPHEADFILE baseline = comparisonOnly ? SearchDirChain(lpszFullName, Shot1.lpHF) : NULL;
 
+    GetFilesSnapAgainst(lpShot, lpszFullName, lpFatherFC, lplpCaller, lpParentDir,
+        baseline != NULL ? baseline->lpFirstFC : NULL, comparisonOnly);
+}
 
 // ----------------------------------------------------------------------
 // USN incremental mode helpers

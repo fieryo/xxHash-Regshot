@@ -239,7 +239,7 @@ typedef struct {
     LPCTSTR name;
     DWORD type;
     LPVOID content;
-    DWORD* match;
+    DWORD* match;                          // NULL permits lookup regardless of match flags
     size_t order;
 } NAMEINDEXENTRY;
 
